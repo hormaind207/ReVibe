@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
 import { X, Check, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useNavigation } from '@/lib/store'
@@ -12,6 +12,7 @@ import { updateStreakOnDaySuccess } from '@/lib/streak'
 import { ScreenHeader } from '@/components/screen-header'
 import { Progress } from '@/components/ui/progress'
 import { ConfettiExplosion } from '@/components/confetti'
+import { playReviewStart, playSuccessPing, playFail, playCardFlip, playMasterFanfare } from '@/lib/sounds'
 import type { DBCard } from '@/lib/db'
 
 interface ReviewSessionProps {
@@ -46,7 +47,25 @@ export function ReviewSession({ categoryId, stackId }: ReviewSessionProps) {
   const isFinished = currentIndex >= cards.length
   const maxStages = category?.maxStages ?? DEFAULT_MAX_STAGES
 
+  const hasPlayedStartRef = useRef(false)
+  const hasPlayedFanfareRef = useRef(false)
+
+  useEffect(() => {
+    if (cards.length > 0 && currentCard && !showComplete && !hasPlayedStartRef.current) {
+      hasPlayedStartRef.current = true
+      playReviewStart()
+    }
+  }, [cards.length, currentCard, showComplete])
+
+  useEffect(() => {
+    if (showComplete && stack && stack.stage >= maxStages && passCount > 0 && !hasPlayedFanfareRef.current) {
+      hasPlayedFanfareRef.current = true
+      playMasterFanfare()
+    }
+  }, [showComplete, stack?.stage, maxStages, passCount])
+
   const handleFlip = useCallback(() => {
+    playCardFlip()
     setIsFlipped(true)
   }, [])
 
@@ -61,6 +80,8 @@ export function ReviewSession({ categoryId, stackId }: ReviewSessionProps) {
 
   const handleResult = useCallback((result: 'pass' | 'fail') => {
     if (!currentCard) return
+    if (result === 'pass') playSuccessPing()
+    else playFail()
     const newResults = new Map(results)
     newResults.set(currentCard.id, result)
     setResults(newResults)

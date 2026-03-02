@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Upload, CheckCircle2 } from 'lucide-react'
 import { parseImportText, bulkImportCards } from '@/lib/hooks/use-cards'
+import { playCardAdd } from '@/lib/sounds'
 
 interface BulkImportModalProps {
   open: boolean
@@ -30,6 +31,7 @@ export function BulkImportModal({ open, onClose, stackId, categoryId }: BulkImpo
     setLoading(true)
     try {
       await bulkImportCards(stackId, categoryId, parsed)
+      playCardAdd()
       setDone(true)
       setTimeout(() => {
         setText('')

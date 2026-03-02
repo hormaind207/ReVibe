@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef } from 'react'
+import { playOnboardingComplete } from '@/lib/sounds'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronRight, X } from 'lucide-react'
 
@@ -213,6 +214,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
 
   const next = () => {
     if (isLast) {
+      playOnboardingComplete()
       localStorage.setItem('onboarding_done', 'true')
       onComplete()
     } else {

@@ -16,6 +16,7 @@ import {
   DEFAULT_NOTIFICATION_HOUR,
   DEFAULT_NOTIFICATION_MINUTE,
 } from '@/lib/hooks/use-notifications'
+import { playButtonTap, playToggleSwitch } from '@/lib/sounds'
 
 export function SettingsScreen() {
   const { navigate } = useNavigation()
@@ -49,6 +50,7 @@ export function SettingsScreen() {
   }
 
   const handleDevModeToggle = () => {
+    playToggleSwitch()
     const next = !devMode
     setDevMode(next)
     localStorage.setItem('dev_mode', String(next))
@@ -78,7 +80,7 @@ export function SettingsScreen() {
             {COLOR_THEMES.map(theme => (
               <button
                 key={theme.id}
-                onClick={() => { setColorTheme(theme.id); if (theme.id === 'carat') setTheme('light'); uploadToGDrive().catch(() => {}) }}
+                onClick={() => { playButtonTap(); setColorTheme(theme.id); if (theme.id === 'carat') setTheme('light'); uploadToGDrive().catch(() => {}) }}
                 className={`flex flex-col items-center gap-1.5 rounded-xl p-3 transition-all ${
                   colorTheme === theme.id ? 'ring-2 ring-offset-2 bg-primary/10' : 'bg-muted'
                 }`}
@@ -183,7 +185,7 @@ export function SettingsScreen() {
             {[7, 8, 9, 12, 18, 20].map(h => (
               <button
                 key={h}
-                onClick={() => handleNotifHourChange(h)}
+                onClick={() => { playButtonTap(); handleNotifHourChange(h) }}
                 className={`rounded-xl px-3 py-1.5 text-xs font-semibold transition-colors ${
                   notifHour === h
                     ? 'bg-primary text-primary-foreground'
@@ -201,7 +203,7 @@ export function SettingsScreen() {
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.05 }}
-          onClick={() => navigate({ type: 'help' })}
+          onClick={() => { playButtonTap(); navigate({ type: 'help' }) }}
           className="flex items-center gap-4 rounded-2xl bg-card px-5 py-4 text-left shadow-sm transition-transform active:scale-[0.98]"
         >
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/15">
@@ -218,7 +220,7 @@ export function SettingsScreen() {
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
-          onClick={() => setShowOnboarding(true)}
+          onClick={() => { playButtonTap(); setShowOnboarding(true) }}
           className="flex items-center gap-4 rounded-2xl bg-card px-5 py-4 text-left shadow-sm transition-transform active:scale-[0.98]"
         >
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/15">

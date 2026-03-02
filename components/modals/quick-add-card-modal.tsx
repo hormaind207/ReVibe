@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, ChevronDown, Plus, Upload, CheckCircle2 } from 'lucide-react'
 import { createCard, parseImportText, bulkImportCards } from '@/lib/hooks/use-cards'
+import { playCardAdd } from '@/lib/sounds'
 import { db, generateId } from '@/lib/db'
 import { getNextReviewDate, mergeEligibleStacks } from '@/lib/leitner'
 import type { DBCategory } from '@/lib/db'
@@ -80,6 +81,7 @@ export function QuickAddCardModal({ open, onClose, categories }: QuickAddCardMod
     try {
       const stackId = await getOrCreateTomorrowStack(selectedCategoryId)
       await createCard({ stackId, categoryId: selectedCategoryId, front: front.trim(), back: back.trim() })
+      playCardAdd()
       if (addAnother) {
         setFront('')
         setBack('')
@@ -102,6 +104,7 @@ export function QuickAddCardModal({ open, onClose, categories }: QuickAddCardMod
     try {
       const stackId = await getOrCreateTomorrowStack(selectedCategoryId)
       await bulkImportCards(stackId, selectedCategoryId, bulkParsed)
+      playCardAdd()
       setBulkDone(true)
       setTimeout(() => {
         setBulkText('')

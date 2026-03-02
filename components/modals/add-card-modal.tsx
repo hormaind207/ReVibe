@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X } from 'lucide-react'
 import { createCard } from '@/lib/hooks/use-cards'
+import { playCardAdd } from '@/lib/sounds'
 
 interface AddCardModalProps {
   open: boolean
@@ -24,6 +25,7 @@ export function AddCardModal({ open, onClose, stackId, categoryId }: AddCardModa
     setLoading(true)
     try {
       await createCard({ stackId, categoryId, front: front.trim(), back: back.trim() })
+      playCardAdd()
       if (addAnother) {
         setFront('')
         setBack('')

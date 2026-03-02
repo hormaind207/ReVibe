@@ -5,7 +5,7 @@ import { motion } from 'framer-motion'
 import { useTheme } from 'next-themes'
 import {
   User, Cloud, HelpCircle, Moon, Sun, Bell, BellOff, Layers, Palette, PlayCircle, Code2, BookOpen,
-  Download, Upload, Trash2, Info, LogOut, RefreshCw, ChevronRight, Check, Pencil, Camera, X,
+  Download, Upload, Trash2, Info, LogOut, RefreshCw, ChevronRight, Check, Pencil, Camera, X, Volume2,
 } from 'lucide-react'
 import { useNavigation } from '@/lib/store'
 import { ScreenHeader } from '@/components/screen-header'
@@ -39,6 +39,7 @@ import {
   DEFAULT_NOTIFICATION_HOUR,
   DEFAULT_NOTIFICATION_MINUTE,
 } from '@/lib/hooks/use-notifications'
+import { playButtonTap, playToggleSwitch, playNotificationChime } from '@/lib/sounds'
 
 const APP_VERSION = '1.0.0'
 
@@ -156,6 +157,7 @@ export function ProfileScreen() {
   const [notifications, setNotifications] = useState(false)
   const [notifHour, setNotifHour] = useState(DEFAULT_NOTIFICATION_HOUR)
   const [defaultMaxStages, setDefaultMaxStages] = useState(DEFAULT_MAX_STAGES)
+  const [soundEnabled, setSoundEnabled] = useState(true)
   const [devMode, setDevMode] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
@@ -178,6 +180,7 @@ export function ProfileScreen() {
     setNotifHour(hour)
     const saved = localStorage.getItem('defaultMaxStages')
     if (saved) setDefaultMaxStages(parseInt(saved, 10))
+    setSoundEnabled(localStorage.getItem('sound_enabled') !== 'false')
     setDevMode(localStorage.getItem('dev_mode') === 'true')
   }, [])
 
@@ -241,6 +244,7 @@ export function ProfileScreen() {
   }
 
   const handleThemeToggle = () => {
+    playToggleSwitch()
     if (colorTheme === 'carat') return // 캐럿 테마는 라이트 모드만 지원
     setTheme(isDark ? 'light' : 'dark')
     uploadToGDrive().catch(() => {})
@@ -258,7 +262,16 @@ export function ProfileScreen() {
     uploadToGDrive().catch(() => {})
   }
 
+  const handleSoundToggle = () => {
+    playToggleSwitch()
+    const next = !soundEnabled
+    setSoundEnabled(next)
+    localStorage.setItem('sound_enabled', String(next))
+    uploadToGDrive().catch(() => {})
+  }
+
   const handleDevModeToggle = () => {
+    playToggleSwitch()
     const next = !devMode
     setDevMode(next)
     localStorage.setItem('dev_mode', String(next))
@@ -266,6 +279,7 @@ export function ProfileScreen() {
   }
 
   const handleNotificationToggle = async () => {
+    playToggleSwitch()
     if (!notifications) {
       const result = await enableNotifications()
       if (result === 'granted') {
@@ -286,6 +300,7 @@ export function ProfileScreen() {
   }
 
   const handleTestNotification = async () => {
+    playNotificationChime()
     await sendTestNotification()
     showToast('테스트 알림을 전송했습니다.')
   }
@@ -399,9 +414,9 @@ export function ProfileScreen() {
               구글 드라이브에 데이터가 있습니다. 데이터를 불러오시겠습니까?
             </p>
             <div className="flex gap-2">
-              <button onClick={handleRestoreAfterConnect} className="flex-1 rounded-xl bg-primary py-2.5 text-sm font-bold text-primary-foreground">예</button>
+              <button onClick={() => { playButtonTap(); handleRestoreAfterConnect() }} className="flex-1 rounded-xl bg-primary py-2.5 text-sm font-bold text-primary-foreground">예</button>
               <button
-                onClick={async () => {
+                onClick={async () => { playButtonTap();
                   setShowRestoreAfterConnectPrompt(false)
                   try {
                     const t = await getSyncFileModifiedTime()
@@ -427,8 +442,8 @@ export function ProfileScreen() {
               )}
             </div>
             <button
-              onClick={handleEditProfileOpen}
-              className="absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm"
+            onClick={() => { playButtonTap(); handleEditProfileOpen() }}
+            className="absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm"
               aria-label="프로필 편집"
             >
               <Pencil className="h-3 w-3" />
@@ -441,7 +456,7 @@ export function ProfileScreen() {
             </p>
           </div>
           <button
-            onClick={handleEditProfileOpen}
+            onClick={() => { playButtonTap(); handleEditProfileOpen() }}
             className="flex h-9 w-9 items-center justify-center rounded-xl bg-muted text-muted-foreground"
           >
             <Pencil className="h-4 w-4" />
@@ -469,7 +484,7 @@ export function ProfileScreen() {
                 <div className="flex flex-col gap-2">
                   <button
                     type="button"
-                    onClick={() => fileInputRef.current?.click()}
+                    onClick={() => { playButtonTap(); fileInputRef.current?.click() }}
                     className="flex items-center gap-2 rounded-xl bg-primary/15 px-3 py-2 text-xs font-semibold text-primary"
                   >
                     <Camera className="h-3.5 w-3.5" />사진 업로드
@@ -477,7 +492,7 @@ export function ProfileScreen() {
                   {editImage && (
                     <button
                       type="button"
-                      onClick={() => setEditImage(undefined)}
+                      onClick={() => { playButtonTap(); setEditImage(undefined) }}
                       className="flex items-center gap-2 rounded-xl bg-muted px-3 py-2 text-xs font-medium text-muted-foreground"
                     >
                       <X className="h-3.5 w-3.5" />사진 제거
@@ -509,7 +524,7 @@ export function ProfileScreen() {
                     <button
                       key={emoji}
                       type="button"
-                      onClick={() => { setEditEmoji(emoji); setEditImage(undefined) }}
+                      onClick={() => { playButtonTap(); setEditEmoji(emoji); setEditImage(undefined) }}
                       className={`flex h-9 w-9 items-center justify-center rounded-xl text-xl transition-all ${
                         !editImage && editEmoji === emoji ? 'bg-primary/20 ring-2 ring-primary' : 'bg-muted hover:bg-primary/10'
                       }`}
@@ -521,13 +536,13 @@ export function ProfileScreen() {
               </div>
               <div className="flex gap-2">
                 <button
-                  onClick={handleSaveProfile}
+                  onClick={() => { playButtonTap(); handleSaveProfile() }}
                   className="flex-1 rounded-xl bg-primary py-2.5 text-sm font-bold text-primary-foreground"
                 >
                   저장
                 </button>
                 <button
-                  onClick={() => setEditingProfile(false)}
+                  onClick={() => { playButtonTap(); setEditingProfile(false) }}
                   className="flex-1 rounded-xl bg-muted py-2.5 text-sm font-medium text-foreground"
                 >
                   취소
@@ -556,20 +571,20 @@ export function ProfileScreen() {
                 icon={<Upload className="h-5 w-5" />}
                 label="수동 백업"
                 description="지금 시점을 날짜별 백업으로 Drive에 저장합니다"
-                onClick={handleManualBackup}
+                onClick={() => { playButtonTap(); handleManualBackup() }}
               />
               <Divider />
               <Row
                 icon={<Download className="h-5 w-5" />}
                 label="백업 불러오기"
                 description="저장된 백업 목록에서 선택해 복원하거나 삭제합니다"
-                onClick={openBackupListModal}
+                onClick={() => { playButtonTap(); openBackupListModal() }}
               />
               <Divider />
               <Row
                 icon={<LogOut className="h-5 w-5" />}
                 label="Google 계정 해제"
-                onClick={handleGoogleSignOut}
+                onClick={() => { playButtonTap(); handleGoogleSignOut() }}
                 danger
               />
             </>
@@ -589,7 +604,7 @@ export function ProfileScreen() {
             <div className="mb-3 flex items-center justify-between">
               <p className="text-sm font-semibold text-foreground">저장된 백업</p>
               <button
-                onClick={() => setShowBackupListModal(false)}
+                onClick={() => { playButtonTap(); setShowBackupListModal(false) }}
                 className="rounded-lg p-1 text-muted-foreground hover:bg-muted"
                 aria-label="닫기"
               >
@@ -619,13 +634,13 @@ export function ProfileScreen() {
                       <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{label}</span>
                       <div className="flex shrink-0 gap-1.5">
                         <button
-                          onClick={() => handleRestoreManualBackup(item.id)}
+                          onClick={() => { playButtonTap(); handleRestoreManualBackup(item.id) }}
                           className="rounded-lg bg-primary px-3 py-1.5 text-xs font-bold text-primary-foreground"
                         >
                           불러오기
                         </button>
                         <button
-                          onClick={() => handleDeleteManualBackup(item.id)}
+                          onClick={() => { playButtonTap(); handleDeleteManualBackup(item.id) }}
                           className="rounded-lg bg-destructive/15 px-3 py-1.5 text-xs font-medium text-destructive"
                         >
                           삭제
@@ -667,6 +682,7 @@ export function ProfileScreen() {
                 <button
                   key={theme.id}
                   onClick={() => {
+                    playButtonTap()
                     setColorTheme(theme.id)
                     if (theme.id === 'carat') setTheme('light')
                     uploadToGDrive().catch(() => {})
@@ -723,7 +739,7 @@ export function ProfileScreen() {
               {[7, 8, 9, 12, 18, 20].map(h => (
                 <button
                   key={h}
-                  onClick={() => handleNotifHourChange(h)}
+                  onClick={() => { playButtonTap(); handleNotifHourChange(h) }}
                   disabled={!notifications}
                   className={`rounded-lg px-2.5 py-1 text-[11px] font-semibold transition-colors disabled:opacity-40 ${
                     notifHour === h ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
@@ -741,7 +757,7 @@ export function ProfileScreen() {
                 icon={<Bell className="h-5 w-5" />}
                 label="테스트 알림 보내기"
                 description="알림이 동작하는지 확인"
-                onClick={handleTestNotification}
+                onClick={() => { playButtonTap(); handleTestNotification() }}
               />
             </>
           )}
@@ -749,6 +765,13 @@ export function ProfileScreen() {
 
         {/* App Settings */}
         <Section title="앱 기본 설정">
+          <Row
+            icon={<Volume2 className="h-5 w-5" />}
+            label="효과음"
+            description="카드 플립, 성공/실패 등 효과음 재생"
+            right={<Toggle checked={soundEnabled} onChange={handleSoundToggle} />}
+          />
+          <Divider />
           <div className="px-4 py-3">
             <div className="mb-2 flex items-center gap-2">
               <Layers className="h-4 w-4 text-muted-foreground" />
@@ -764,7 +787,7 @@ export function ProfileScreen() {
               {[3, 4, 5, 6, 7, 8, 10].map(n => (
                 <button
                   key={n}
-                  onClick={() => handleDefaultMaxStagesChange(n)}
+                  onClick={() => { playButtonTap(); handleDefaultMaxStagesChange(n) }}
                   className={`rounded-lg px-2.5 py-1 text-[11px] font-semibold transition-colors ${
                     defaultMaxStages === n ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
                   }`}
@@ -782,7 +805,7 @@ export function ProfileScreen() {
             icon={<Download className="h-5 w-5" />}
             label="데이터 내보내기"
             description="JSON 파일로 백업"
-            onClick={handleExport}
+            onClick={() => { playButtonTap(); handleExport() }}
           />
           <Divider />
           <label className="flex w-full cursor-pointer items-center gap-3 px-4 py-3.5 transition-colors active:bg-muted">
@@ -802,14 +825,14 @@ export function ProfileScreen() {
             icon={<HelpCircle className="h-5 w-5" />}
             label="사용 가이드"
             description="라이트너 시스템 및 앱 사용법"
-            onClick={() => navigate({ type: 'help' })}
+            onClick={() => { playButtonTap(); navigate({ type: 'help' }) }}
           />
           <Divider />
           <Row
             icon={<PlayCircle className="h-5 w-5" />}
             label="앱 소개 다시 보기"
             description="처음 실행 시 나타나는 가이드"
-            onClick={() => setShowOnboarding(true)}
+            onClick={() => { playButtonTap(); setShowOnboarding(true) }}
           />
           <Divider />
           <Row
@@ -822,7 +845,7 @@ export function ProfileScreen() {
             icon={<Info className="h-5 w-5" />}
             label="ㄴ섞기"
             description=""
-            onClick={() => setShowNmixxEasterEgg(true)}
+            onClick={() => { playButtonTap(); setShowNmixxEasterEgg(true) }}
           />
         </Section>
 
@@ -841,7 +864,7 @@ export function ProfileScreen() {
             icon={<Trash2 className="h-5 w-5" />}
             label="모든 데이터 삭제"
             description="되돌릴 수 없습니다"
-            onClick={() => setClearConfirm(true)}
+            onClick={() => { playButtonTap(); setClearConfirm(true) }}
             danger
           />
         </Section>
@@ -851,8 +874,8 @@ export function ProfileScreen() {
           <div className="rounded-2xl bg-destructive/10 p-4">
             <p className="mb-3 text-sm font-semibold text-destructive">모든 카테고리, 스택, 카드를 삭제할까요?</p>
             <div className="flex gap-2">
-              <button onClick={handleClearData} className="flex-1 rounded-xl bg-destructive py-2.5 text-sm font-bold text-white">삭제</button>
-              <button onClick={() => setClearConfirm(false)} className="flex-1 rounded-xl bg-muted py-2.5 text-sm font-medium">취소</button>
+              <button onClick={() => { playButtonTap(); handleClearData() }} className="flex-1 rounded-xl bg-destructive py-2.5 text-sm font-bold text-white">삭제</button>
+              <button onClick={() => { playButtonTap(); setClearConfirm(false) }} className="flex-1 rounded-xl bg-muted py-2.5 text-sm font-medium">취소</button>
             </div>
           </div>
         )}
@@ -881,7 +904,7 @@ export function ProfileScreen() {
             <p className="text-xl font-bold text-foreground">NMIXX!</p>
             <button
               type="button"
-              onClick={() => setShowNmixxEasterEgg(false)}
+              onClick={() => { playButtonTap(); setShowNmixxEasterEgg(false) }}
               className="mt-4 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
             >
               닫기
