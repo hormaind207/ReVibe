@@ -36,7 +36,13 @@ export function SettingsScreen() {
     setNotifEnabled(enabled)
     setNotifHour(hour)
 
-    setDevMode(localStorage.getItem('dev_mode') === 'true')
+    const storedDevMode = localStorage.getItem('dev_mode')
+    if (storedDevMode === null) {
+      localStorage.setItem('dev_mode', 'false')
+      setDevMode(false)
+    } else {
+      setDevMode(storedDevMode === 'true')
+    }
   }, [])
 
   const handleDefaultMaxStagesChange = (val: number) => {

@@ -181,7 +181,13 @@ export function ProfileScreen() {
     const saved = localStorage.getItem('defaultMaxStages')
     if (saved) setDefaultMaxStages(parseInt(saved, 10))
     setSoundEnabled(localStorage.getItem('sound_enabled') !== 'false')
-    setDevMode(localStorage.getItem('dev_mode') === 'true')
+    const storedDevMode = localStorage.getItem('dev_mode')
+    if (storedDevMode === null) {
+      localStorage.setItem('dev_mode', 'false')
+      setDevMode(false)
+    } else {
+      setDevMode(storedDevMode === 'true')
+    }
   }, [])
 
   // 구글 연결 직후 Drive에 데이터가 있으면 불러올지 묻기 (마운트 시 플래그만 보고, DB는 getSyncMeta로 직접 읽어 타이밍 이슈 방지)

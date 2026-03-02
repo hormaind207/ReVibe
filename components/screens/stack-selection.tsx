@@ -200,7 +200,13 @@ export function StackSelection({ categoryId, stage }: StackSelectionProps) {
   const [graduatedCardToDelete, setGraduatedCardToDelete] = useState<DBCard | null>(null)
 
   useEffect(() => {
-    setDevMode(localStorage.getItem('dev_mode') === 'true')
+    const storedDevMode = localStorage.getItem('dev_mode')
+    if (storedDevMode === null) {
+      localStorage.setItem('dev_mode', 'false')
+      setDevMode(false)
+    } else {
+      setDevMode(storedDevMode === 'true')
+    }
   }, [])
 
   if (!isGraduatedView && !stageInfo) return null

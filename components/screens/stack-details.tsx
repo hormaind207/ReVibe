@@ -202,7 +202,13 @@ export function StackDetails({ categoryId, stackId }: StackDetailsProps) {
   const [editDate, setEditDate] = useState('')
 
   useEffect(() => {
-    setDevMode(localStorage.getItem('dev_mode') === 'true')
+    const storedDevMode = localStorage.getItem('dev_mode')
+    if (storedDevMode === null) {
+      localStorage.setItem('dev_mode', 'false')
+      setDevMode(false)
+    } else {
+      setDevMode(storedDevMode === 'true')
+    }
   }, [])
 
   if (!stack) return (
