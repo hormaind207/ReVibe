@@ -113,7 +113,16 @@ self.addEventListener('message', async (event) => {
   }
 
   if (type === 'SHOW_NOW') {
-    await showReviewNotification()
+    // 테스트 알림: 카드 유무와 관계없이 항상 알림 표시
+    await self.registration.showNotification('ReVibe 알림 테스트 🧠', {
+      body: '알림이 정상적으로 동작하고 있어요!',
+      icon: '/icon-192.png',
+      badge: '/icon-192.png',
+      tag: 'revibe-test-notification',
+      renotify: true,
+      vibrate: [200, 100, 200],
+      data: { url: '/' },
+    })
   }
 
   if (type === 'CHECK_DUE') {
