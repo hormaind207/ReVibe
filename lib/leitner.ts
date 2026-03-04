@@ -225,8 +225,8 @@ export async function mergeEligibleStacks(categoryId: string): Promise<void> {
 
         if (group.length < 2) continue
 
-        // Use the most recently created stack as target (its name/date is preserved)
-        const targetStack = group.reduce((a, b) => a.createdAt >= b.createdAt ? a : b)
+        // Use the oldest (earliest created) stack as target (its name/date is preserved)
+        const targetStack = group.reduce((a, b) => a.createdAt <= b.createdAt ? a : b)
         const mergeStacks = group.filter(s => s.id !== targetStack.id)
 
         await db.transaction('rw', [db.stacks, db.cards], async () => {
