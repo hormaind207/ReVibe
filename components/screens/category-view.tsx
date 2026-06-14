@@ -1,16 +1,18 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ChevronRight, GraduationCap, MoreVertical, Pencil, Trash2, Settings2, Check } from 'lucide-react'
+import { ChevronRight, GraduationCap, MoreVertical, Pencil, Trash2, Settings2, Check, Clock, Search } from 'lucide-react'
 import { useNavigation } from '@/lib/store'
 import { useCategory, updateCategory, deleteCategory } from '@/lib/hooks/use-categories'
-import { useStackCountByStage, useGraduatedStacks } from '@/lib/hooks/use-stacks'
+import { useGraduatedStacks, useStageStackCounts } from '@/lib/hooks/use-stacks'
+import { useWaitingCardCount } from '@/lib/hooks/use-cards'
 import { STAGES } from '@/lib/types'
 import { DEFAULT_MAX_STAGES, STAGE_INTERVALS, mergeEligibleStacks } from '@/lib/leitner'
 import { db, today, toDateString } from '@/lib/db'
-import { uploadToGDrive } from '@/lib/sync'
+import { scheduleDriveSync } from '@/lib/sync/sync-engine'
 import { ScreenHeader } from '@/components/screen-header'
+import { CategoryCardSearchModal } from '@/components/modals/category-card-search-modal'
 import { ICON_MAP } from './dashboard'
 
 const stageColorClasses = [
@@ -29,18 +31,18 @@ const itemVariants = {
 }
 
 function StageRow({
-  categoryId, stage, index, customInterval, customLabel, onIntervalChange, onLabelChange,
+  categoryId, stage, index, stackCount, customInterval, customLabel, onIntervalChange, onLabelChange,
 }: {
   categoryId: string
   stage: typeof STAGES[0]
   index: number
+  stackCount: number
   customInterval?: number
   customLabel?: string
   onIntervalChange: (stageNum: number, days: number) => void
   onLabelChange: (stageNum: number, label: string) => void
 }) {
   const { navigate } = useNavigation()
-  const stackCount = useStackCountByStage(categoryId, stage.stage) ?? 0
   const [showIntervalEdit, setShowIntervalEdit] = useState(false)
   const [editingLabel, setEditingLabel] = useState(false)
   const [labelInput, setLabelInput] = useState('')
@@ -210,7 +212,9 @@ export function CategoryView({ categoryId }: CategoryViewProps) {
   const { navigate, goBack } = useNavigation()
   const category = useCategory(categoryId)
   const graduatedStacks = useGraduatedStacks(categoryId) ?? []
+  const waitingCount = useWaitingCardCount(categoryId) ?? 0
   const [showMenu, setShowMenu] = useState(false)
+  const [showSearch, setShowSearch] = useState(false)
 
   // Merge eligible stacks whenever this screen is opened
   useEffect(() => {
@@ -222,6 +226,13 @@ export function CategoryView({ categoryId }: CategoryViewProps) {
   const [editStagesMode, setEditStagesMode] = useState(false)
   const [editMaxStages, setEditMaxStages] = useState(DEFAULT_MAX_STAGES)
 
+  const maxStages = category?.maxStages ?? DEFAULT_MAX_STAGES
+  const stageNumbers = useMemo(
+    () => STAGES.slice(0, maxStages).map((s) => s.stage),
+    [maxStages]
+  )
+  const stageStackCounts = useStageStackCounts(categoryId, stageNumbers)
+
   if (!category) return (
     <div className="flex min-h-screen items-center justify-center">
       <p className="text-muted-foreground">로딩 중...</p>
@@ -229,7 +240,6 @@ export function CategoryView({ categoryId }: CategoryViewProps) {
   )
 
   const Icon = ICON_MAP[category.icon] || ICON_MAP.book
-  const maxStages = category.maxStages ?? DEFAULT_MAX_STAGES
   const visibleStages = STAGES.slice(0, maxStages)
 
   const handleEdit = () => {
@@ -300,7 +310,7 @@ export function CategoryView({ categoryId }: CategoryViewProps) {
     }
 
     await mergeEligibleStacks(categoryId)
-    await uploadToGDrive().catch(() => {})
+    scheduleDriveSync()
   }
 
   return (
@@ -309,7 +319,15 @@ export function CategoryView({ categoryId }: CategoryViewProps) {
         title={editMode ? '' : category.name}
         showBack
         rightElement={
-          <div className="relative">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowSearch(true)}
+              className="flex h-9 w-9 items-center justify-center rounded-xl bg-card text-muted-foreground shadow-sm"
+              aria-label="카드 검색"
+            >
+              <Search className="h-5 w-5" />
+            </button>
+            <div className="relative">
             <button
               onClick={() => setShowMenu(v => !v)}
               className="flex h-9 w-9 items-center justify-center rounded-xl bg-card text-muted-foreground shadow-sm"
@@ -341,6 +359,7 @@ export function CategoryView({ categoryId }: CategoryViewProps) {
                 </div>
               </>
             )}
+            </div>
           </div>
         }
       />
@@ -411,12 +430,33 @@ export function CategoryView({ categoryId }: CategoryViewProps) {
         initial="hidden"
         animate="show"
       >
+        {/* 대기 (맨 위) */}
+        <motion.button
+          variants={itemVariants}
+          whileTap={{ scale: 0.97 }}
+          onClick={() => navigate({ type: 'stage', categoryId, stage: 0 })}
+          className="flex items-center justify-between rounded-2xl bg-muted px-5 py-4 shadow-sm"
+        >
+          <div className="flex items-center gap-3">
+            <Clock className="h-6 w-6 text-foreground" />
+            <div className="flex flex-col items-start">
+              <span className="text-sm font-bold text-foreground">대기</span>
+              <span className="text-xs text-muted-foreground">복습 전 보관함</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-bold text-muted-foreground">{waitingCount}장</span>
+            <ChevronRight className="h-5 w-5 text-muted-foreground" />
+          </div>
+        </motion.button>
+
         {visibleStages.map((stage, i) => (
           <StageRow
             key={stage.stage}
             categoryId={categoryId}
             stage={stage}
             index={i}
+            stackCount={stageStackCounts?.[stage.stage] ?? 0}
             customInterval={category.stageIntervals?.[stage.stage]}
             customLabel={category.stageLabels?.[stage.stage]}
             onIntervalChange={handleIntervalChange}
@@ -444,6 +484,13 @@ export function CategoryView({ categoryId }: CategoryViewProps) {
           </div>
         </motion.button>
       </motion.div>
+
+      <CategoryCardSearchModal
+        open={showSearch}
+        onClose={() => setShowSearch(false)}
+        categoryId={categoryId}
+        category={category}
+      />
     </div>
   )
 }

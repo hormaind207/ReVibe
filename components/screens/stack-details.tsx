@@ -1,8 +1,8 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Play, Lock, Check, Trophy, Sparkles, Plus, Trash2, Pencil, MoreVertical, ArrowRight, Calendar } from 'lucide-react'
+import { Play, Lock, Check, Trophy, Sparkles, Plus, Trash2, Pencil, MoreVertical, ArrowRight, Calendar, BookOpen } from 'lucide-react'
 import { useNavigation } from '@/lib/store'
 import { useStack, deleteStack, moveStackToStage, moveCardToStack } from '@/lib/hooks/use-stacks'
 import { useCategory } from '@/lib/hooks/use-categories'
@@ -13,10 +13,9 @@ import { STAGES } from '@/lib/types'
 import { DEFAULT_MAX_STAGES, STAGE_INTERVALS } from '@/lib/leitner'
 import { ScreenHeader } from '@/components/screen-header'
 import { AddCardModal } from '@/components/modals/add-card-modal'
-import { BulkImportModal } from '@/components/modals/bulk-import-modal'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db, today } from '@/lib/db'
-import { uploadToGDrive } from '@/lib/sync'
+import { db, today, toDateString } from '@/lib/db'
+import { scheduleDriveSync } from '@/lib/sync/sync-engine'
 import type { DBCard, DBCategory, DBStack } from '@/lib/db'
 
 const STAGE_BG_COLORS = [
@@ -34,7 +33,7 @@ function formatDate(dateStr: string) {
 
 function getStackDisplayName(stack: DBStack): string {
   if (stack.name?.trim()) return stack.name.trim()
-  const dateStr = stack.createdAt ? new Date(stack.createdAt).toISOString().slice(0, 10) : stack.nextReviewDate
+  const dateStr = stack.createdAt ? toDateString(new Date(stack.createdAt)) : stack.nextReviewDate
   const d = new Date(dateStr + 'T00:00:00')
   const formatted = d.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric' })
   return `${formatted} 스택`
@@ -59,10 +58,17 @@ function CardMoveModal({
   ) ?? []) as DBStack[]
 
   const selectedCategory = allCategories.find(c => c.id === selectedCategoryId)
+  const [moving, setMoving] = useState(false)
 
   const handleMove = async (targetStack: DBStack) => {
-    await moveCardToStack(card.id, targetStack.id, selectedCategoryId)
-    onClose()
+    if (moving) return
+    setMoving(true)
+    try {
+      await moveCardToStack(card.id, targetStack.id, selectedCategoryId)
+      onClose()
+    } finally {
+      setMoving(false)
+    }
   }
 
   return (
@@ -96,7 +102,8 @@ function CardMoveModal({
               <button
                 key={s.id}
                 onClick={() => handleMove(s)}
-                className="flex items-center justify-between rounded-xl bg-muted px-4 py-3 text-sm font-semibold text-foreground hover:bg-primary/10"
+                disabled={moving}
+                className="flex items-center justify-between rounded-xl bg-muted px-4 py-3 text-sm font-semibold text-foreground hover:bg-primary/10 disabled:opacity-50"
               >
                 <span>단계 {s.stage} · {selectedCategory?.name}</span>
                 <ArrowRight className="h-4 w-4 text-primary" />
@@ -113,23 +120,18 @@ function CardMoveModal({
 }
 
 function CardItem({
-  card, index, stage,
+  card, index, stage, skipMotion,
   onEdit, onDelete, onMoveCard,
 }: {
-  card: DBCard; index: number; stage: number;
+  card: DBCard; index: number; stage: number; skipMotion?: boolean
   onEdit: (card: DBCard) => void
   onDelete: (id: string) => void
   onMoveCard: (card: DBCard) => void
 }) {
   const [showActions, setShowActions] = useState(false)
 
-  return (
-    <motion.div
-      initial={{ opacity: 0, x: -12 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ delay: 0.05 + index * 0.04 }}
-      className="relative flex items-center gap-3 rounded-xl bg-card px-4 py-3 shadow-sm"
-    >
+  const content = (
+    <>
       <span
         className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg text-xs font-bold"
         style={{
@@ -174,6 +176,25 @@ function CardItem({
           </div>
         </>
       )}
+    </>
+  )
+
+  if (skipMotion) {
+    return (
+      <div className="relative flex items-center gap-3 rounded-xl bg-card px-4 py-3 shadow-sm">
+        {content}
+      </div>
+    )
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: -12 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ delay: 0.05 + index * 0.04 }}
+      className="relative flex items-center gap-3 rounded-xl bg-card px-4 py-3 shadow-sm"
+    >
+      {content}
     </motion.div>
   )
 }
@@ -188,8 +209,11 @@ export function StackDetails({ categoryId, stackId }: StackDetailsProps) {
   const stack = useStack(stackId)
   const category = useCategory(categoryId)
   const cards = useCards(stackId) ?? []
+  const skipCardMotion =
+    cards.length > 20 ||
+    (typeof window !== 'undefined' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches)
   const [showAddCard, setShowAddCard] = useState(false)
-  const [showBulkImport, setShowBulkImport] = useState(false)
   const [editingCard, setEditingCard] = useState<DBCard | null>(null)
   const [editFront, setEditFront] = useState('')
   const [editBack, setEditBack] = useState('')
@@ -197,19 +221,8 @@ export function StackDetails({ categoryId, stackId }: StackDetailsProps) {
   const [showMoveStage, setShowMoveStage] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [movingCard, setMovingCard] = useState<DBCard | null>(null)
-  const [devMode, setDevMode] = useState(false)
   const [showSetDate, setShowSetDate] = useState(false)
   const [editDate, setEditDate] = useState('')
-
-  useEffect(() => {
-    const storedDevMode = localStorage.getItem('dev_mode')
-    if (storedDevMode === null) {
-      localStorage.setItem('dev_mode', 'false')
-      setDevMode(false)
-    } else {
-      setDevMode(storedDevMode === 'true')
-    }
-  }, [])
 
   if (!stack) return (
     <div className="flex min-h-screen items-center justify-center">
@@ -279,7 +292,7 @@ export function StackDetails({ categoryId, stackId }: StackDetailsProps) {
       scheduledReviewDate: editDate,
       updatedAt: Date.now(),
     })
-    await uploadToGDrive().catch(() => {})
+    scheduleDriveSync()
     setShowSetDate(false)
   }
 
@@ -326,17 +339,13 @@ export function StackDetails({ categoryId, stackId }: StackDetailsProps) {
                       ))}
                     </div>
                   )}
-                  {devMode && (
-                    <>
-                      <div className="my-0.5 mx-2 h-px bg-border" />
-                      <button
-                        onClick={handleOpenSetDate}
-                        className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium text-foreground hover:bg-muted"
-                      >
-                        <Calendar className="h-4 w-4" />복습일 설정
-                      </button>
-                    </>
-                  )}
+                  <div className="my-0.5 mx-2 h-px bg-border" />
+                  <button
+                    onClick={handleOpenSetDate}
+                    className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium text-foreground hover:bg-muted"
+                  >
+                    <Calendar className="h-4 w-4" />복습일 설정
+                  </button>
                   <div className="my-0.5 mx-2 h-px bg-border" />
                   <button
                     onClick={() => { setShowDeleteConfirm(true); setShowStackMenu(false) }}
@@ -365,7 +374,7 @@ export function StackDetails({ categoryId, stackId }: StackDetailsProps) {
         <div className="mx-4 mb-4 rounded-2xl bg-card p-4 shadow-sm border border-primary/30">
           <div className="mb-2 flex items-center gap-2">
             <Calendar className="h-4 w-4 text-primary" />
-            <p className="text-sm font-bold text-foreground">복습일 설정 (개발자)</p>
+            <p className="text-sm font-bold text-foreground">복습일 설정</p>
           </div>
           <input
             type="date"
@@ -377,7 +386,7 @@ export function StackDetails({ categoryId, stackId }: StackDetailsProps) {
             {[-3, -2, -1, 0, 1, 3, 7].map(offset => {
               const d = new Date()
               d.setDate(d.getDate() + offset)
-              const ds = d.toISOString().slice(0, 10)
+              const ds = toDateString(d)
               const label = offset === 0 ? '오늘' : offset < 0 ? `${-offset}일 전` : `${offset}일 후`
               return (
                 <button
@@ -546,20 +555,33 @@ export function StackDetails({ categoryId, stackId }: StackDetailsProps) {
           </div>
         </motion.div>
 
-        {/* Start Review */}
-        <motion.button
+        {/* Review & Study */}
+        <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.9 }}
-          whileTap={{ scale: 0.96 }}
-          onClick={() => navigate({ type: 'review', categoryId, stackId })}
-          disabled={cards.length === 0}
-          className="flex items-center justify-center gap-2 rounded-2xl py-4 text-base font-bold text-card shadow-md transition-all active:shadow-sm disabled:opacity-50"
-          style={{ backgroundColor: cards.length > 0 ? STAGE_BORDER_COLORS[(stack.stage - 1) % 7] : '#b8b0a5' }}
+          className="flex gap-2"
         >
-          <Play className="h-5 w-5" />
-          복습 시작
-        </motion.button>
+          <motion.button
+            whileTap={{ scale: 0.96 }}
+            onClick={() => navigate({ type: 'review', categoryId, stackId })}
+            disabled={cards.length === 0}
+            className="flex flex-1 items-center justify-center gap-2 rounded-2xl py-4 text-base font-bold text-card shadow-md transition-all active:shadow-sm disabled:opacity-50"
+            style={{ backgroundColor: cards.length > 0 ? STAGE_BORDER_COLORS[(stack.stage - 1) % 7] : '#b8b0a5' }}
+          >
+            <Play className="h-5 w-5" />
+            복습 시작
+          </motion.button>
+          <motion.button
+            whileTap={{ scale: 0.96 }}
+            onClick={() => navigate({ type: 'study', categoryId, stackId })}
+            disabled={cards.length === 0}
+            className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-muted py-4 text-base font-bold text-foreground shadow-sm transition-all active:shadow-sm disabled:opacity-50"
+          >
+            <BookOpen className="h-5 w-5 text-primary" />
+            자유학습
+          </motion.button>
+        </motion.div>
 
         {/* Cards Section */}
         <motion.div
@@ -569,20 +591,12 @@ export function StackDetails({ categoryId, stackId }: StackDetailsProps) {
         >
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-bold text-foreground">카드 목록 ({cards.length}장)</h2>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setShowBulkImport(true)}
-                className="rounded-xl bg-muted px-3 py-1.5 text-xs font-semibold text-muted-foreground"
-              >
-                일괄 추가
-              </button>
-              <button
+            <button
                 onClick={() => setShowAddCard(true)}
                 className="flex items-center gap-1 rounded-xl bg-primary/15 px-3 py-1.5 text-xs font-semibold text-primary"
               >
                 <Plus className="h-3.5 w-3.5" />카드 추가
               </button>
-            </div>
           </div>
 
           {cards.length === 0 ? (
@@ -598,6 +612,7 @@ export function StackDetails({ categoryId, stackId }: StackDetailsProps) {
                   card={card}
                   index={i}
                   stage={stack.stage}
+                  skipMotion={skipCardMotion}
                   onEdit={handleEditCard}
                   onDelete={handleDeleteCard}
                   onMoveCard={(c) => setMovingCard(c)}
@@ -645,12 +660,6 @@ export function StackDetails({ categoryId, stackId }: StackDetailsProps) {
       <AddCardModal
         open={showAddCard}
         onClose={() => setShowAddCard(false)}
-        stackId={stackId}
-        categoryId={categoryId}
-      />
-      <BulkImportModal
-        open={showBulkImport}
-        onClose={() => setShowBulkImport(false)}
         stackId={stackId}
         categoryId={categoryId}
       />

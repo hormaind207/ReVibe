@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from 'react'
+import { createContext, useContext, useState, useCallback, useEffect, useRef, useMemo, type ReactNode } from 'react'
 
 export type Screen =
   | { type: 'dashboard' }
@@ -8,10 +8,21 @@ export type Screen =
   | { type: 'stage'; categoryId: string; stage: number }
   | { type: 'stack'; categoryId: string; stackId: string }
   | { type: 'review'; categoryId: string; stackId: string }
+  | { type: 'study'; categoryId: string; stackId: string }
   | { type: 'stats' }
+  | { type: 'ranking' }
+  | { type: 'ranking-moderation' }
   | { type: 'settings' }
   | { type: 'profile' }
   | { type: 'help' }
+  | { type: 'marketplace' }
+  | { type: 'marketplace-template'; templateId: string }
+  | { type: 'my-templates' }
+  | { type: 'marketplace-hashtag'; tag: string }
+  | { type: 'marketplace-section'; section: 'favorites' | 'popular' | 'official' }
+  | { type: 'marketplace-author'; ownerId: string }
+  | { type: 'marketplace-moderation' }
+  | { type: 'bug-reports-admin' }
 
 interface NavigationContextType {
   screen: Screen
@@ -31,15 +42,29 @@ function screenToHash(screen: Screen): string {
     case 'stage': return `#/category/${screen.categoryId}/stage/${screen.stage}`
     case 'stack': return `#/category/${screen.categoryId}/stack/${screen.stackId}`
     case 'review': return `#/category/${screen.categoryId}/review/${screen.stackId}`
+    case 'study': return `#/category/${screen.categoryId}/study/${screen.stackId}`
     case 'stats': return '#/stats'
+    case 'ranking': return '#/ranking'
+    case 'ranking-moderation': return '#/ranking/moderation'
     case 'settings': return '#/settings'
     case 'profile': return '#/profile'
     case 'help': return '#/help'
+    case 'marketplace': return '#/marketplace'
+    case 'marketplace-template': return `#/marketplace/template/${screen.templateId}`
+    case 'my-templates': return '#/marketplace/mine'
+    case 'marketplace-hashtag': return `#/marketplace/tag/${encodeURIComponent(screen.tag)}`
+    case 'marketplace-section': return `#/marketplace/${screen.section}`
+    case 'marketplace-author': return `#/marketplace/author/${screen.ownerId}`
+    case 'marketplace-moderation': return '#/marketplace/moderation'
+    case 'bug-reports-admin': return '#/admin/bug-reports'
   }
 }
 
 function hashToScreen(hash: string): Screen {
   const path = hash.replace(/^#/, '') || '/'
+
+  const studyMatch = path.match(/^\/category\/([^/]+)\/study\/([^/]+)$/)
+  if (studyMatch) return { type: 'study', categoryId: studyMatch[1], stackId: studyMatch[2] }
 
   const reviewMatch = path.match(/^\/category\/([^/]+)\/review\/([^/]+)$/)
   if (reviewMatch) return { type: 'review', categoryId: reviewMatch[1], stackId: reviewMatch[2] }
@@ -53,7 +78,27 @@ function hashToScreen(hash: string): Screen {
   const categoryMatch = path.match(/^\/category\/([^/]+)$/)
   if (categoryMatch) return { type: 'category', categoryId: categoryMatch[1] }
 
+  const templateMatch = path.match(/^\/marketplace\/template\/([^/]+)$/)
+  if (templateMatch) return { type: 'marketplace-template', templateId: templateMatch[1] }
+
+  const hashtagMatch = path.match(/^\/marketplace\/tag\/([^/]+)$/)
+  if (hashtagMatch) return { type: 'marketplace-hashtag', tag: decodeURIComponent(hashtagMatch[1]) }
+
+  if (path === '/marketplace/favorites') return { type: 'marketplace-section', section: 'favorites' }
+  if (path === '/marketplace/popular') return { type: 'marketplace-section', section: 'popular' }
+  if (path === '/marketplace/official') return { type: 'marketplace-section', section: 'official' }
+
+  const authorMatch = path.match(/^\/marketplace\/author\/([^/]+)$/)
+  if (authorMatch) return { type: 'marketplace-author', ownerId: authorMatch[1] }
+
+  if (path === '/marketplace/moderation') return { type: 'marketplace-moderation' }
+  if (path === '/admin/bug-reports') return { type: 'bug-reports-admin' }
+  if (path === '/marketplace/mine') return { type: 'my-templates' }
+  if (path === '/marketplace') return { type: 'marketplace' }
+
   if (path === '/stats') return { type: 'stats' }
+  if (path === '/ranking/moderation') return { type: 'ranking-moderation' }
+  if (path === '/ranking') return { type: 'ranking' }
   if (path === '/settings') return { type: 'settings' }
   if (path === '/profile') return { type: 'profile' }
   if (path === '/help') return { type: 'help' }
@@ -76,11 +121,23 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
   const historyRef = useRef(history)
   historyRef.current = history
 
-  // Sync hash → state on browser back/forward
+  // Sync hash → state on browser back/forward without flattening the in-app
+  // history (which would make later "back" jumps skip intermediate screens).
   useEffect(() => {
     const onPopState = () => {
       const s = hashToScreen(window.location.hash)
-      setHistory([{ type: 'dashboard' }, s])
+      const targetHash = screenToHash(s)
+      setHistory(prev => {
+        // Normal back: target equals the previous entry → pop one level.
+        if (prev.length >= 2 && screenToHash(prev[prev.length - 2]) === targetHash) {
+          return prev.slice(0, -1)
+        }
+        // Target already somewhere in the stack → truncate to it.
+        const idx = prev.map(screenToHash).lastIndexOf(targetHash)
+        if (idx >= 0) return prev.slice(0, idx + 1)
+        // Unknown target (forward nav / deep link) → minimal rebuild.
+        return [{ type: 'dashboard' }, s]
+      })
     }
     window.addEventListener('popstate', onPopState)
     return () => window.removeEventListener('popstate', onPopState)
@@ -112,8 +169,19 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     setHistory(next)
   }, [])
 
+  const contextValue = useMemo(
+    () => ({
+      screen,
+      navigate,
+      navigateToStageReplacingStackFlow,
+      goBack,
+      history,
+    }),
+    [screen, navigate, navigateToStageReplacingStackFlow, goBack, history]
+  )
+
   return (
-    <NavigationContext.Provider value={{ screen, navigate, navigateToStageReplacingStackFlow, goBack, history }}>
+    <NavigationContext.Provider value={contextValue}>
       {children}
     </NavigationContext.Provider>
   )

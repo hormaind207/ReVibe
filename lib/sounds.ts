@@ -104,3 +104,41 @@ export function playToggleSwitch(): void {
 export function playReviewStart(): void {
   playSweep({ startFreq: 440, endFreq: 554, duration: 0.12, gain: 0.08 })
 }
+
+/** Like — 좋아요(하트) 누름 */
+export function playLike(): void {
+  playSweep({ startFreq: 660, endFreq: 990, duration: 0.12, gain: 0.1 })
+}
+
+/** Favorite — 즐겨찾기(별) 추가 */
+export function playFavorite(): void {
+  playSweep({ startFreq: 740, endFreq: 1100, duration: 0.14, gain: 0.09 })
+}
+
+/** Publish Success — 템플릿 게시/저장 완료 */
+export function playPublishSuccess(): void {
+  const c = getContext()
+  if (!c || !isEnabled()) return
+  const osc = c.createOscillator()
+  const gain = c.createGain()
+  osc.connect(gain)
+  gain.connect(c.destination)
+  osc.type = 'sine'
+  osc.frequency.setValueAtTime(523, c.currentTime)
+  osc.frequency.linearRampToValueAtTime(784, c.currentTime + 0.1)
+  osc.frequency.linearRampToValueAtTime(1047, c.currentTime + 0.2)
+  gain.gain.setValueAtTime(0.1, c.currentTime)
+  gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.3)
+  osc.start(c.currentTime)
+  osc.stop(c.currentTime + 0.3)
+}
+
+/** Report — 신고 접수 (낮고 짧은 경고음) */
+export function playReport(): void {
+  playSweep({ startFreq: 400, endFreq: 220, duration: 0.18, gain: 0.09 })
+}
+
+/** Template Import — 템플릿/카드 받기 완료 */
+export function playTemplateImport(): void {
+  playSweep({ startFreq: 500, endFreq: 880, duration: 0.16, gain: 0.09 })
+}

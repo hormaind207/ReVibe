@@ -7,7 +7,8 @@
 import { db, today, type DBStreakMeta } from './db'
 import { addDays } from './leitner'
 import { getTodayReviewStacks } from './leitner'
-import { uploadToGDrive } from './sync'
+import { scheduleDriveSync } from './sync/sync-engine'
+import { addLeagueScore } from './ranking'
 
 const STREAK_META_ID = 'meta'
 
@@ -19,25 +20,30 @@ function yesterday(): string {
 export async function hasNonGraduatedCards(): Promise<boolean> {
   const nonCompletedStacks = await db.stacks.filter(s => !s.isCompleted).toArray()
   if (nonCompletedStacks.length === 0) return false
-  const stackIds = new Set(nonCompletedStacks.map(s => s.id))
-  const cards = await db.cards.toArray()
-  return cards.some(c => stackIds.has(c.stackId))
+  for (const stack of nonCompletedStacks) {
+    const count = await db.cards.where('stackId').equals(stack.id).count()
+    if (count > 0) return true
+  }
+  return false
 }
 
-export async function getStreakMeta(): Promise<{ currentStreak: number; lastSuccessDate: string | null }> {
+export async function getStreakMeta(): Promise<{ currentStreak: number; lastSuccessDate: string | null; longestStreak: number }> {
   const row = await db.streakMeta.get(STREAK_META_ID)
-  if (!row) return { currentStreak: 0, lastSuccessDate: null }
-  return { currentStreak: row.currentStreak, lastSuccessDate: row.lastSuccessDate }
+  if (!row) return { currentStreak: 0, lastSuccessDate: null, longestStreak: 0 }
+  return { currentStreak: row.currentStreak, lastSuccessDate: row.lastSuccessDate, longestStreak: row.longestStreak ?? 0 }
 }
 
 export async function updateStreakMeta(
-  patch: { currentStreak?: number; lastSuccessDate?: string | null }
+  patch: { currentStreak?: number; lastSuccessDate?: string | null; longestStreak?: number }
 ): Promise<void> {
   const current = await db.streakMeta.get(STREAK_META_ID)
+  const nextStreak = patch.currentStreak ?? current?.currentStreak ?? 0
+  const currentLongest = current?.longestStreak ?? 0
   const next: DBStreakMeta = {
     id: STREAK_META_ID,
-    currentStreak: patch.currentStreak ?? current?.currentStreak ?? 0,
+    currentStreak: nextStreak,
     lastSuccessDate: patch.lastSuccessDate !== undefined ? patch.lastSuccessDate : (current?.lastSuccessDate ?? null),
+    longestStreak: patch.longestStreak !== undefined ? patch.longestStreak : Math.max(currentLongest, nextStreak),
   }
   await db.streakMeta.put(next)
 }
@@ -57,8 +63,12 @@ export async function updateStreakOnDaySuccess(): Promise<void> {
 
   const y = yesterday()
   const nextStreak = meta.lastSuccessDate === y ? meta.currentStreak + 1 : 1
+  const isNewStreak = nextStreak > meta.currentStreak
   await updateStreakMeta({ currentStreak: nextStreak, lastSuccessDate: t })
-  await uploadToGDrive().catch(() => {})
+  scheduleDriveSync()
+  if (isNewStreak) {
+    void addLeagueScore(10, 'streak')
+  }
 }
 
 const STREAK_PROCESSED_DATE_KEY = 'streak_processed_date'

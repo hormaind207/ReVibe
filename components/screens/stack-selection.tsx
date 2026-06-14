@@ -1,17 +1,17 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useMemo } from 'react'
 import { motion } from 'framer-motion'
-import { ChevronRight, Calendar, GraduationCap, Plus, Trash2, Pencil, MoreVertical } from 'lucide-react'
+import { ChevronRight, Calendar, GraduationCap, Trash2, Pencil, MoreVertical } from 'lucide-react'
 import { useNavigation } from '@/lib/store'
-import { useStacksByStage, useGraduatedStacks, createStack, deleteStack, updateStack } from '@/lib/hooks/use-stacks'
+import { useStacksByStage, useGraduatedStacks, deleteStack, updateStack } from '@/lib/hooks/use-stacks'
 import { useCategory } from '@/lib/hooks/use-categories'
-import { useCardCount, useGraduatedCards, deleteCard } from '@/lib/hooks/use-cards'
+import { useGraduatedCards, deleteCard, useStackCardCounts } from '@/lib/hooks/use-cards'
 import { db } from '@/lib/db'
-import { uploadToGDrive } from '@/lib/sync'
+import { scheduleDriveSync } from '@/lib/sync/sync-engine'
 import { STAGES } from '@/lib/types'
 import { ScreenHeader } from '@/components/screen-header'
-import { today } from '@/lib/db'
+import { today, toDateString } from '@/lib/db'
 import type { DBStack, DBCard } from '@/lib/db'
 
 const containerVariants = {
@@ -31,7 +31,7 @@ function formatDate(dateStr: string) {
 
 function getStackDisplayName(stack: DBStack): string {
   if (stack.name?.trim()) return stack.name.trim()
-  const dateStr = stack.createdAt ? new Date(stack.createdAt).toISOString().slice(0, 10) : stack.nextReviewDate
+  const dateStr = stack.createdAt ? toDateString(new Date(stack.createdAt)) : stack.nextReviewDate
   return `${formatDate(dateStr)} 스택`
 }
 
@@ -40,7 +40,7 @@ async function deleteGraduatedCard(card: DBCard): Promise<void> {
   const remaining = await db.cards.where('stackId').equals(card.stackId).count()
   if (remaining === 0) {
     await db.stacks.delete(card.stackId)
-    await uploadToGDrive().catch(() => {})
+    scheduleDriveSync()
   }
 }
 
@@ -91,6 +91,7 @@ function GraduatedCardRow({
 function StackRow({
   stack,
   categoryId,
+  cardCount,
   editMode,
   selected,
   onToggleSelect,
@@ -98,12 +99,12 @@ function StackRow({
 }: {
   stack: DBStack
   categoryId: string
+  cardCount: number
   editMode: boolean
   selected: boolean
   onToggleSelect: (id: string) => void
   onNavigate: () => void
 }) {
-  const cardCount = useCardCount(stack.id) ?? 0
   const t = today()
   const isDue = stack.nextReviewDate <= t
   const displayName = getStackDisplayName(stack)
@@ -190,7 +191,6 @@ export function StackSelection({ categoryId, stage }: StackSelectionProps) {
   const category = useCategory(categoryId)
   const stageInfo = STAGES.find(s => s.stage === stage)
   const stageLabel = (category?.stageLabels?.[stage]) ?? stageInfo?.interval ?? `단계 ${stage}`
-  const [devMode, setDevMode] = useState(false)
   const [editMode, setEditMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [graduatedSort, setGraduatedSort] = useState<GraduatedSort>('reviewedDesc')
@@ -199,15 +199,8 @@ export function StackSelection({ categoryId, stage }: StackSelectionProps) {
   const [renameValue, setRenameValue] = useState('')
   const [graduatedCardToDelete, setGraduatedCardToDelete] = useState<DBCard | null>(null)
 
-  useEffect(() => {
-    const storedDevMode = localStorage.getItem('dev_mode')
-    if (storedDevMode === null) {
-      localStorage.setItem('dev_mode', 'false')
-      setDevMode(false)
-    } else {
-      setDevMode(storedDevMode === 'true')
-    }
-  }, [])
+  const stackIds = useMemo(() => stacks.map((s) => s.id), [stacks])
+  const stackCardCounts = useStackCardCounts(isGraduatedView ? [] : stackIds)
 
   if (!isGraduatedView && !stageInfo) return null
 
@@ -251,11 +244,6 @@ export function StackSelection({ categoryId, stage }: StackSelectionProps) {
     setEditMode(false)
   }
 
-  const handleCreateStack = async () => {
-    const newStack = await createStack(categoryId, stage)
-    navigate({ type: 'stack', categoryId, stackId: newStack.id })
-  }
-
   const handleDeleteGraduatedCard = async () => {
     if (!graduatedCardToDelete) return
     await deleteGraduatedCard(graduatedCardToDelete)
@@ -277,23 +265,12 @@ export function StackSelection({ categoryId, stage }: StackSelectionProps) {
                 완료
               </button>
             ) : (
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={() => setEditMode(true)}
-                  className="rounded-xl bg-muted px-3 py-1.5 text-sm font-semibold text-foreground"
-                >
-                  편집
-                </button>
-                {devMode && (
-                  <button
-                    onClick={handleCreateStack}
-                    className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/15 text-primary"
-                    aria-label="새 스택 추가"
-                  >
-                    <Plus className="h-5 w-5" />
-                  </button>
-                )}
-              </div>
+              <button
+                onClick={() => setEditMode(true)}
+                className="rounded-xl bg-muted px-3 py-1.5 text-sm font-semibold text-foreground"
+              >
+                편집
+              </button>
             )
           ) : undefined
         }
@@ -414,6 +391,7 @@ export function StackSelection({ categoryId, stage }: StackSelectionProps) {
                   key={stack.id}
                   stack={stack}
                   categoryId={categoryId}
+                  cardCount={stackCardCounts?.[stack.id] ?? 0}
                   editMode={editMode}
                   selected={selectedIds.has(stack.id)}
                   onToggleSelect={toggleSelect}

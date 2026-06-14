@@ -1,0 +1,32 @@
+-- ============================================================================
+-- pg_cron schedules for push notifications
+-- Prerequisites: enable pg_cron + pg_net in Supabase Dashboard → Database → Extensions
+-- Replace YOUR_PROJECT_REF and YOUR_SERVICE_ROLE_KEY before running.
+-- ============================================================================
+
+-- Hourly: invoke Edge Function process-notifications
+-- SELECT cron.unschedule('process-notifications-hourly') WHERE EXISTS (
+--   SELECT 1 FROM cron.job WHERE jobname = 'process-notifications-hourly'
+-- );
+
+-- SELECT cron.schedule(
+--   'process-notifications-hourly',
+--   '0 * * * *',
+--   $$
+--   SELECT net.http_post(
+--     url := 'https://YOUR_PROJECT_REF.supabase.co/functions/v1/process-notifications',
+--     headers := jsonb_build_object(
+--       'Content-Type', 'application/json',
+--       'Authorization', 'Bearer YOUR_SERVICE_ROLE_KEY'
+--     ),
+--     body := '{}'::jsonb
+--   );
+--   $$
+-- );
+
+-- Daily cleanup of stale snapshots and old queue rows (UTC 16:00 ≈ KST 01:00)
+-- SELECT cron.schedule(
+--   'cleanup-notification-data-daily',
+--   '0 16 * * *',
+--   $$SELECT public.delete_stale_notification_data()$$
+-- );

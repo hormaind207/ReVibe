@@ -43,17 +43,22 @@ export function AddCategoryModal({ open, onClose }: AddCategoryModalProps) {
     }
   }, [open])
 
+  const handleClose = () => {
+    setName('')
+    setSelectedIcon('book')
+    setSelectedColor('bg-[#fdb99b]/40')
+    setMaxStages(DEFAULT_MAX_STAGES)
+    setLoading(false)
+    onClose()
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!name.trim()) return
     setLoading(true)
     try {
       await createCategory({ name: name.trim(), icon: selectedIcon, color: selectedColor, maxStages })
-      setName('')
-      setSelectedIcon('book')
-      setSelectedColor('bg-[#fdb99b]/40')
-      setMaxStages(DEFAULT_MAX_STAGES)
-      onClose()
+      handleClose()
     } finally {
       setLoading(false)
     }
@@ -69,7 +74,7 @@ export function AddCategoryModal({ open, onClose }: AddCategoryModalProps) {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm"
-            onClick={onClose}
+            onClick={handleClose}
           />
           <motion.div
             key="modal"
@@ -82,7 +87,7 @@ export function AddCategoryModal({ open, onClose }: AddCategoryModalProps) {
             <div className="mb-5 flex items-center justify-between">
               <h2 className="text-lg font-bold text-foreground">새 카테고리 추가</h2>
               <button
-                onClick={onClose}
+                onClick={handleClose}
                 className="flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground"
               >
                 <X className="h-4 w-4" />
@@ -161,6 +166,9 @@ export function AddCategoryModal({ open, onClose }: AddCategoryModalProps) {
                   <span className="w-8 text-center text-sm font-bold text-primary">{maxStages}</span>
                 </div>
                 <p className="mt-1 text-[10px] text-muted-foreground">3~10단계 선택 가능. 기본값은 설정에서 변경할 수 있습니다.</p>
+                <p className="mt-2 rounded-lg bg-amber-500/10 px-3 py-2 text-[11px] text-amber-800 dark:text-amber-200">
+                  기본으로 설정된 7단계가 가장 효과적이므로, 변경하는 것을 추천하지 않습니다.
+                </p>
               </div>
 
               {/* Preview */}

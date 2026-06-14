@@ -1,5 +1,6 @@
 /**
- * Handles Google OAuth implicit flow redirect callback.
+ * Legacy Google OAuth implicit flow redirect callback.
+ * Fallback when Supabase Auth is not configured — see lib/db-ready-context.tsx.
  *
  * After redirect, the URL hash contains:
  *   #access_token=TOKEN&token_type=bearer&expires_in=3600&scope=...
@@ -9,6 +10,10 @@
  */
 
 import { updateSyncMeta } from './hooks/use-sync-meta'
+import { updateUserProfile } from './hooks/use-user-profile'
+
+/** Must match GOOGLE_JUST_CONNECTED_KEY in lib/google-auth.ts */
+const GOOGLE_JUST_CONNECTED_KEY = 'google_just_connected'
 
 export async function handleOAuthCallback(): Promise<boolean> {
   if (typeof window === 'undefined') return false
@@ -35,7 +40,7 @@ export async function handleOAuthCallback(): Promise<boolean> {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
     if (!res.ok) return false
-    const userInfo: { email: string } = await res.json()
+    const userInfo: { email: string; name?: string; picture?: string } = await res.json()
 
     await updateSyncMeta({
       googleEmail: userInfo.email,
@@ -43,8 +48,13 @@ export async function handleOAuthCallback(): Promise<boolean> {
       googleTokenExpiry: Date.now() + (Number(expiresIn) || 3600) * 1000,
     })
 
+    await updateUserProfile({
+      nickname: userInfo.name || userInfo.email.split('@')[0] || '게스트',
+      avatarImage: userInfo.picture,
+    })
+
     if (typeof window !== 'undefined') {
-      window.sessionStorage.setItem('google_just_connected', '1')
+      window.sessionStorage.setItem(GOOGLE_JUST_CONNECTED_KEY, '1')
     }
     return true
   } catch (err) {

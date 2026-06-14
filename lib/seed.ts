@@ -4,10 +4,11 @@ import { db } from './db'
 export async function seedDatabase(): Promise<void> {}
 
 export async function clearDatabase(): Promise<void> {
-  await db.transaction('rw', [db.categories, db.stacks, db.cards, db.streakMeta], async () => {
+  await db.transaction('rw', [db.categories, db.stacks, db.cards, db.streakMeta, db.userProfile], async () => {
     await db.cards.clear()
     await db.stacks.clear()
     await db.categories.clear()
     await db.streakMeta.clear()
+    await db.userProfile.clear()
   })
 }

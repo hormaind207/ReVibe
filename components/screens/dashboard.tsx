@@ -1,20 +1,22 @@
 'use client'
 
-import { useState, useRef, useCallback } from 'react'
+import { useState, useMemo, memo } from 'react'
+import { useDragScroll } from '@/hooks/use-drag-scroll'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronRight, Plus, BookOpen, Languages, Calculator, FlaskConical, Music, Globe, Flame, MoreVertical, Trash2 } from 'lucide-react'
 import { useNavigation } from '@/lib/store'
 import { useCategories, deleteCategory } from '@/lib/hooks/use-categories'
 import { useTodayReviewStacks } from '@/lib/hooks/use-stacks'
-import { useCategoryCardCount } from '@/lib/hooks/use-cards'
 import { ScreenHeader } from '@/components/screen-header'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db, today } from '@/lib/db'
+import { db } from '@/lib/db'
 import type { DBCategory, DBStack } from '@/lib/db'
-import { hasNonGraduatedCards, getStreakTierConfig } from '@/lib/streak'
+import { getStreakTierConfig } from '@/lib/streak'
 import { AddCategoryModal } from '@/components/modals/add-category-modal'
 import { QuickAddCardModal } from '@/components/modals/quick-add-card-modal'
 import { useUserProfile } from '@/lib/hooks/use-user-profile'
+import { useMarketplaceUser } from '@/lib/marketplace/auth'
+import { resolveProfileAvatarUrl } from '@/lib/google-auth'
 
 export const ICON_MAP: Record<string, typeof BookOpen> = {
   book: BookOpen,
@@ -49,9 +51,8 @@ function CategorySkeleton() {
   )
 }
 
-function CategoryCard({ category }: { category: DBCategory }) {
+function CategoryCardInner({ category, cardCount }: { category: DBCategory; cardCount?: number }) {
   const { navigate } = useNavigation()
-  const cardCount = useCategoryCardCount(category.id)
   const Icon = ICON_MAP[category.icon] || BookOpen
   const [showMenu, setShowMenu] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -67,13 +68,15 @@ function CategoryCard({ category }: { category: DBCategory }) {
       <motion.button
         whileTap={{ scale: 0.96 }}
         onClick={() => navigate({ type: 'category', categoryId: category.id })}
-        className={`flex w-full flex-col items-center gap-2 rounded-2xl ${category.color} p-5 shadow-sm`}
+        className={`relative flex w-full flex-col items-center gap-2 overflow-hidden rounded-2xl ${category.backgroundImage ? 'bg-card' : category.color} p-5 shadow-sm`}
+        style={category.backgroundImage ? { backgroundImage: `url(${category.backgroundImage})`, backgroundSize: 'cover', backgroundPosition: 'center' } : undefined}
       >
-        <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-card/80 shadow-sm">
+        {category.backgroundImage && <span className="absolute inset-0 bg-black/35" aria-hidden />}
+        <div className="relative flex h-12 w-12 items-center justify-center rounded-xl bg-card/80 shadow-sm">
           <Icon className="h-6 w-6 text-foreground" />
         </div>
-        <span className="text-sm font-bold text-foreground">{category.name}</span>
-        <span className="text-xs text-muted-foreground">
+        <span className={`relative text-sm font-bold ${category.backgroundImage ? 'text-white' : 'text-foreground'}`}>{category.name}</span>
+        <span className={`relative text-xs ${category.backgroundImage ? 'text-white/80' : 'text-muted-foreground'}`}>
           {cardCount === undefined ? '...' : `(${cardCount}장)`}
         </span>
       </motion.button>
@@ -138,12 +141,10 @@ function CategoryCard({ category }: { category: DBCategory }) {
   )
 }
 
-function TodayStackCard({ stack, categoryName }: { stack: DBStack; categoryName: string }) {
+const CategoryCard = memo(CategoryCardInner)
+
+function TodayStackCardInner({ stack, categoryName, cardCount }: { stack: DBStack; categoryName: string; cardCount?: number }) {
   const { navigate } = useNavigation()
-  const cardCount = useLiveQuery(
-    () => db.cards.where('stackId').equals(stack.id).count(),
-    [stack.id]
-  )
 
   return (
     <button
@@ -162,50 +163,14 @@ function TodayStackCard({ stack, categoryName }: { stack: DBStack; categoryName:
   )
 }
 
-function useDragScroll() {
-  const ref = useRef<HTMLDivElement>(null)
-  const isDragging = useRef(false)
-  const startX = useRef(0)
-  const scrollLeft = useRef(0)
-  const hasDragged = useRef(false)
+const TodayStackCard = memo(TodayStackCardInner)
 
-  const onMouseDown = useCallback((e: React.MouseEvent) => {
-    isDragging.current = true
-    hasDragged.current = false
-    startX.current = e.pageX - (ref.current?.offsetLeft ?? 0)
-    scrollLeft.current = ref.current?.scrollLeft ?? 0
-    if (ref.current) ref.current.style.cursor = 'grabbing'
-  }, [])
-
-  const onMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!isDragging.current || !ref.current) return
-    e.preventDefault()
-    const x = e.pageX - ref.current.offsetLeft
-    const walk = x - startX.current
-    if (Math.abs(walk) > 4) hasDragged.current = true
-    ref.current.scrollLeft = scrollLeft.current - walk
-  }, [])
-
-  const onMouseUp = useCallback(() => {
-    isDragging.current = false
-    if (ref.current) ref.current.style.cursor = 'grab'
-  }, [])
-
-  const onMouseLeave = useCallback(() => {
-    isDragging.current = false
-    if (ref.current) ref.current.style.cursor = 'grab'
-  }, [])
-
-  const preventClickIfDragged = useCallback((e: React.MouseEvent) => {
-    if (hasDragged.current) e.stopPropagation()
-  }, [])
-
-  return { ref, onMouseDown, onMouseMove, onMouseUp, onMouseLeave, preventClickIfDragged }
-}
 
 export function DashboardScreen() {
   const { navigate } = useNavigation()
   const userProfile = useUserProfile()
+  const { user: marketplaceUser } = useMarketplaceUser()
+  const profileAvatarUrl = resolveProfileAvatarUrl(userProfile.avatarImage, marketplaceUser)
   // undefined = loading, [] = empty, Category[] = has data
   const categories = useCategories()
   const todayStacks = useTodayReviewStacks()
@@ -215,22 +180,46 @@ export function DashboardScreen() {
 
   const isLoading = categories === undefined || todayStacks === undefined
 
-  const totalTodayCards = useLiveQuery(
+  // Batch card count queries — one live query for categories + today stacks
+  const categoryIds = useMemo(() => (categories ?? []).map(c => c.id), [categories])
+  const todayStackIds = useMemo(() => (todayStacks ?? []).map(s => s.id), [todayStacks])
+
+  const homeCounts = useLiveQuery(
     async () => {
-      const t = today()
-      const stacks = await db.stacks.filter(s => !s.isCompleted && s.nextReviewDate <= t).toArray()
-      let count = 0
-      for (const s of stacks) {
-        count += await db.cards.where('stackId').equals(s.id).count()
-      }
-      return count
-    }
+      const [catPairs, stackPairs] = await Promise.all([
+        categoryIds.length
+          ? Promise.all(
+              categoryIds.map((id) =>
+                db.cards.where('categoryId').equals(id).count().then((n) => [id, n] as const)
+              )
+            )
+          : Promise.resolve([] as readonly (readonly [string, number])[]),
+        todayStackIds.length
+          ? Promise.all(
+              todayStackIds.map((id) =>
+                db.cards.where('stackId').equals(id).count().then((n) => [id, n] as const)
+              )
+            )
+          : Promise.resolve([] as readonly (readonly [string, number])[]),
+      ])
+      const categoryCounts = Object.fromEntries(catPairs) as Record<string, number>
+      const stackCounts = Object.fromEntries(stackPairs) as Record<string, number>
+      const totalTodayCards = stackPairs.reduce((sum, [, n]) => sum + n, 0)
+      return { categoryCounts, stackCounts, totalTodayCards }
+    },
+    [categoryIds.join(','), todayStackIds.join(',')]
   )
 
-  const streakRow = useLiveQuery(() => db.streakMeta.get('meta'), [])
-  const hasNonGraduated = useLiveQuery(() => hasNonGraduatedCards(), [])
+  const categoryCounts = homeCounts?.categoryCounts
+  const stackCounts = homeCounts?.stackCounts
+  const totalTodayCards = homeCounts?.totalTodayCards
 
-  const categoryMap = new Map((categories ?? []).map(c => [c.id, c]))
+  const streakRow = useLiveQuery(() => db.streakMeta.get('meta'), [])
+  const hasNonGraduated = useLiveQuery(
+    () => db.stacks.filter(s => !s.isCompleted).count().then(n => n > 0)
+  )
+
+  const categoryMap = useMemo(() => new Map((categories ?? []).map(c => [c.id, c])), [categories])
   const streak = streakRow?.currentStreak ?? 0
   const streakTier = getStreakTierConfig(streak)
   const showStreak = hasNonGraduated === true
@@ -245,8 +234,13 @@ export function DashboardScreen() {
             className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/20 overflow-hidden transition-transform active:scale-95"
             aria-label="프로필 및 설정"
           >
-            {userProfile.avatarImage ? (
-              <img src={userProfile.avatarImage} alt="프로필" className="h-full w-full object-cover" />
+            {profileAvatarUrl ? (
+              <img
+                src={profileAvatarUrl}
+                alt="프로필"
+                className="h-full w-full object-cover"
+                referrerPolicy="no-referrer"
+              />
             ) : (
               <span className="text-lg">{userProfile.avatarEmoji}</span>
             )}
@@ -357,6 +351,7 @@ export function DashboardScreen() {
                   key={stack.id}
                   stack={stack}
                   categoryName={categoryMap.get(stack.categoryId)?.name ?? '...'}
+                  cardCount={stackCounts?.[stack.id]}
                 />
               ))}
             </div>
@@ -377,7 +372,7 @@ export function DashboardScreen() {
             ) : (
               <>
                 {(categories ?? []).map((cat) => (
-                  <CategoryCard key={cat.id} category={cat} />
+                  <CategoryCard key={cat.id} category={cat} cardCount={categoryCounts?.[cat.id]} />
                 ))}
                 <motion.button
                   variants={itemVariants}

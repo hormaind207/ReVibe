@@ -4,6 +4,13 @@ import { createContext, useContext, useState, useEffect, type ReactNode } from '
 import { db } from './db'
 import { seedDatabase } from './seed'
 import { handleOAuthCallback } from './oauth-handler'
+import { isSupabaseConfigured } from './supabase'
+import {
+  completeSupabaseOAuthIfNeeded,
+  initGoogleFromSupabaseSession,
+  isOAuthCallbackUrl,
+  syncDriveTokenFromSupabaseSession,
+} from './google-auth'
 
 type DBReadyState = 'loading' | 'ready' | 'error'
 
@@ -17,21 +24,31 @@ export function DBReadyProvider({ children }: { children: ReactNode }) {
 
     async function init() {
       try {
-        // 1. Handle Google OAuth redirect callback if present in the URL.
-        //    Must happen before NavigationProvider mounts so the initial
-        //    screen can be set to profile after a successful login.
-        const justLoggedIn = await handleOAuthCallback()
-        if (justLoggedIn) {
-          // Point the URL to the profile screen so NavigationProvider
-          // starts there, showing the user their newly connected account.
+        // 1. PKCE code exchange before any other Supabase usage (anon session, etc.)
+        const oauthSession = isOAuthCallbackUrl()
+          ? await completeSupabaseOAuthIfNeeded()
+          : null
+
+        // 2. Open IndexedDB — profile sync writes to Dexie
+        await db.open()
+        await seedDatabase()
+
+        // 3. Legacy Drive hash OAuth (Supabase 미설정 시만) + Supabase session sync
+        const legacyDriveLogin = isSupabaseConfigured()
+          ? false
+          : await handleOAuthCallback()
+        let supabaseLogin = false
+        if (!legacyDriveLogin) {
+          if (oauthSession?.user && !oauthSession.user.is_anonymous) {
+            await syncDriveTokenFromSupabaseSession(oauthSession)
+            supabaseLogin = true
+          } else {
+            supabaseLogin = await initGoogleFromSupabaseSession()
+          }
+        }
+        if (legacyDriveLogin || supabaseLogin) {
           window.history.replaceState(null, '', '/#/profile')
         }
-
-        // 2. Open IndexedDB (triggers version migration if needed)
-        await db.open()
-
-        // 3. Seed initial data (no-op if DB already has data)
-        await seedDatabase()
 
         if (!cancelled) setState('ready')
       } catch (err) {

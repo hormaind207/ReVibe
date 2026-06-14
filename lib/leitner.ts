@@ -1,5 +1,5 @@
 import { db, generateId, today, toDateString, type DBStack, type DBCard } from './db'
-import { uploadToGDrive } from './sync'
+import { scheduleDriveSync } from './sync/sync-engine'
 
 // Stage intervals in days (default values, can be overridden per category)
 export const STAGE_INTERVALS: Record<number, number> = {
@@ -32,6 +32,66 @@ export const MERGE_TOLERANCE: Record<number, number | null> = {
 export const MAX_STAGE = 7
 export const DEFAULT_MAX_STAGES = 7
 
+/** Sentinel stage for the per-category "waiting" pool (not part of the Leitner flow). */
+export const WAITING_STAGE = 0
+
+/**
+ * Get or create the single stage-1 stack scheduled for tomorrow (for new/promoted cards).
+ * Reuses an existing matching stack to keep stage 1 tidy.
+ */
+export async function getOrCreateTomorrowStack(categoryId: string): Promise<string> {
+  const category = await db.categories.get(categoryId)
+  const tomorrow = getNextReviewDate(1, new Date(), category?.stageIntervals)
+
+  const existing = await db.stacks
+    .where('categoryId').equals(categoryId)
+    .filter(s => s.stage === 1 && !s.isCompleted && s.nextReviewDate === tomorrow)
+    .first()
+  if (existing) return existing.id
+
+  const now = Date.now()
+  const stackId = generateId()
+  await db.stacks.add({
+    id: stackId,
+    categoryId,
+    stage: 1,
+    nextReviewDate: tomorrow,
+    scheduledReviewDate: tomorrow,
+    isCompleted: false,
+    createdAt: now,
+    updatedAt: now,
+  })
+  await mergeEligibleStacks(categoryId)
+  return stackId
+}
+
+/**
+ * Get or create the single "waiting" stack for a category (stage 0).
+ * Cards here are excluded from review/streak/stage stats until promoted to stage 1.
+ */
+export async function getOrCreateWaitingStack(categoryId: string): Promise<string> {
+  const existing = await db.stacks
+    .where('categoryId').equals(categoryId)
+    .filter(s => s.stage === WAITING_STAGE && !s.isCompleted)
+    .first()
+  if (existing) return existing.id
+
+  const now = Date.now()
+  const stackId = generateId()
+  const t = today()
+  await db.stacks.add({
+    id: stackId,
+    categoryId,
+    stage: WAITING_STAGE,
+    nextReviewDate: t,
+    scheduledReviewDate: t,
+    isCompleted: false,
+    createdAt: now,
+    updatedAt: now,
+  })
+  return stackId
+}
+
 /** Get interval days for a stage, respecting per-category overrides. */
 export function getIntervalDays(stage: number, categoryIntervals?: Record<number, number>): number {
   return categoryIntervals?.[stage] ?? STAGE_INTERVALS[stage] ?? 1
@@ -49,14 +109,16 @@ export function getNextReviewDate(
 }
 
 export function addDays(dateStr: string, days: number): string {
-  const d = new Date(dateStr)
+  // Parse as LOCAL midnight (not UTC) to stay consistent with toDateString/today().
+  const d = new Date(`${dateStr}T00:00:00`)
   d.setDate(d.getDate() + days)
   return toDateString(d)
 }
 
 export function diffDays(a: string, b: string): number {
-  const da = new Date(a).getTime()
-  const db2 = new Date(b).getTime()
+  // Parse as LOCAL midnight to avoid off-by-one across timezones.
+  const da = new Date(`${a}T00:00:00`).getTime()
+  const db2 = new Date(`${b}T00:00:00`).getTime()
   return Math.round((da - db2) / (1000 * 60 * 60 * 24))
 }
 
@@ -155,6 +217,7 @@ export async function processReviewResult(
   const isLastStage = stack.stage >= maxStages
   if (stackEmpty && isLastStage) {
     await db.stacks.delete(stackId)
+    scheduleDriveSync()
     return {
       promoted: allPassed,
       demotedCount: failedIds.length,
@@ -164,7 +227,7 @@ export async function processReviewResult(
     }
   }
 
-  await uploadToGDrive().catch(() => {})
+  scheduleDriveSync()
   return {
     promoted: allPassed,
     demotedCount: failedIds.length,
@@ -177,8 +240,9 @@ export async function processReviewResult(
  * Merge stacks in the same category and stage whose nextReviewDate is within tolerance.
  * Uses simple categoryId index (not compound) for maximum reliability.
  */
-export async function mergeEligibleStacks(categoryId: string): Promise<void> {
+export async function mergeEligibleStacks(categoryId: string): Promise<boolean> {
   const now = Date.now()
+  let didMerge = false
 
   try {
     // Fetch all non-completed stacks for this category in one query (avoids compound index issues)
@@ -225,6 +289,8 @@ export async function mergeEligibleStacks(categoryId: string): Promise<void> {
 
         if (group.length < 2) continue
 
+        didMerge = true
+
         // Use the oldest (earliest created) stack as target (its name/date is preserved)
         const targetStack = group.reduce((a, b) => a.createdAt <= b.createdAt ? a : b)
         const mergeStacks = group.filter(s => s.id !== targetStack.id)
@@ -240,10 +306,11 @@ export async function mergeEligibleStacks(categoryId: string): Promise<void> {
         })
       }
     }
-    await uploadToGDrive().catch(() => {})
+    if (didMerge) scheduleDriveSync()
   } catch (err) {
     console.error('[ReVibe] mergeEligibleStacks error:', err)
   }
+  return didMerge
 }
 
 /**
@@ -319,26 +386,17 @@ export async function applyPartialReviewResult(
   })
 
   const remaining = await db.cards.where('stackId').equals(stackId).count()
+  // Default: stay on the original stage (stack still has unanswered cards there).
+  let navigateStage = stack.stage
   if (remaining === 0) {
     await db.stacks.delete(stackId)
+    // Original stack is gone — navigate to where the saved cards actually moved
+    // (failed → stage 1, otherwise the promoted next stage) so it isn't empty.
+    navigateStage = failedIds.length > 0 ? 1 : nextStage
   }
   await mergeEligibleStacks(stack.categoryId)
-  await uploadToGDrive().catch(() => {})
-  return { categoryId: stack.categoryId, stage: stack.stage }
-}
-
-/**
- * Reset a stack back to stage 1.
- */
-export async function resetStack(stackId: string): Promise<void> {
-  const now = Date.now()
-  await db.stacks.update(stackId, {
-    stage: 1,
-    nextReviewDate: getNextReviewDate(1),
-    isCompleted: false,
-    updatedAt: now,
-  })
-  await uploadToGDrive().catch(() => {})
+  scheduleDriveSync()
+  return { categoryId: stack.categoryId, stage: navigateStage }
 }
 
 /**
@@ -346,7 +404,7 @@ export async function resetStack(stackId: string): Promise<void> {
  */
 export async function getTodayReviewStacks(): Promise<DBStack[]> {
   const t = today()
-  const all = await db.stacks.filter(s => !s.isCompleted && s.nextReviewDate <= t).toArray()
+  const all = await db.stacks.filter(s => !s.isCompleted && s.stage >= 1 && s.nextReviewDate <= t).toArray()
   return all
 }
 
@@ -359,7 +417,7 @@ export async function getTodayReviewStacks(): Promise<DBStack[]> {
 export async function handleOverdueStacks(): Promise<number> {
   const t = today()
   const overdueStacks = await db.stacks
-    .filter(s => !s.isCompleted && s.nextReviewDate < t)
+    .filter(s => !s.isCompleted && s.stage >= 1 && s.nextReviewDate < t)
     .toArray()
 
   const now = Date.now()
@@ -373,10 +431,11 @@ export async function handleOverdueStacks(): Promise<number> {
 
   // Always merge all categories on startup (not just ones with overdue stacks)
   const allCategories = await db.categories.toArray()
-  for (const cat of allCategories) {
-    await mergeEligibleStacks(cat.id)
-  }
+  let dirty = overdueStacks.length > 0
+  const mergeResults = await Promise.all(allCategories.map(cat => mergeEligibleStacks(cat.id)))
+  if (mergeResults.some(Boolean)) dirty = true
 
-  // 백업은 카테고리/스택/카드/설정 변경 시에만 수행. 앱 로드·구글 연결만으로는 업로드하지 않음.
+  if (dirty) scheduleDriveSync()
+
   return overdueStacks.length
 }

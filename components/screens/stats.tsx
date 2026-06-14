@@ -2,57 +2,24 @@
 
 import { motion } from 'framer-motion'
 import { ScreenHeader } from '@/components/screen-header'
-import { useLiveQuery } from 'dexie-react-hooks'
-import { db, today } from '@/lib/db'
 import { STAGES } from '@/lib/types'
+import { useExtendedLocalStats } from '@/lib/hooks/use-local-stats'
 
 export function StatsScreen() {
-  const totalCards = useLiveQuery(() => db.cards.count(), [], 0) ?? 0
-  const totalCategories = useLiveQuery(() => db.categories.count(), [], 0) ?? 0
-  const totalStacks = useLiveQuery(() => db.stacks.count(), [], 0) ?? 0
-  const graduatedCount = useLiveQuery(
-    () => db.stacks.filter(s => s.isCompleted).count(),
-    [],
-    0
-  ) ?? 0
-
-  const t = today()
-  const todayCount = useLiveQuery(
-    async () => {
-      const stacks = await db.stacks.filter(s => !s.isCompleted && s.nextReviewDate <= t).toArray()
-      let count = 0
-      for (const s of stacks) {
-        count += await db.cards.where('stackId').equals(s.id).count()
-      }
-      return count
-    },
-    [],
-    0
-  ) ?? 0
-
-  const stageDistribution = useLiveQuery(
-    async () => {
-      const results = await Promise.all(
-        STAGES.map(async ({ stage }) => {
-          const stacks = await db.stacks.where('stage').equals(stage).filter(s => !s.isCompleted).toArray()
-          let count = 0
-          for (const s of stacks) {
-            count += await db.cards.where('stackId').equals(s.id).count()
-          }
-          return { stage, count }
-        })
-      )
-      return results
-    },
-    [],
-    STAGES.map(s => ({ stage: s.stage, count: 0 }))
-  )
+  const {
+    totalCards,
+    totalCategories,
+    totalStacks,
+    todayCount,
+    graduatedCount,
+    stageDistribution,
+  } = useExtendedLocalStats()
 
   const stageIntervalLabels: Record<number, string> = {
     1: '매일', 2: '2일', 3: '1주', 4: '2주', 5: '1달', 6: '1달', 7: '1달',
   }
 
-  const maxCount = Math.max(...(stageDistribution?.map(s => s.count) ?? [0]), 1)
+  const maxCount = Math.max(...stageDistribution.map((s) => s.count), 1)
 
   const stageBgColors = [
     'bg-stage-1', 'bg-stage-2', 'bg-stage-3', 'bg-stage-4',
@@ -92,7 +59,7 @@ export function StatsScreen() {
         <div className="rounded-2xl bg-card p-5 shadow-sm">
           <h2 className="mb-4 text-sm font-bold text-foreground">단계별 카드 수</h2>
           <div className="flex flex-col gap-3">
-            {(stageDistribution ?? []).map(({ stage, count }, i) => (
+            {stageDistribution.map(({ stage, count }, i) => (
               <div key={stage} className="flex items-center gap-3">
                 <div className="flex w-16 flex-col">
                   <span className="text-xs font-semibold text-muted-foreground">단계 {stage}</span>

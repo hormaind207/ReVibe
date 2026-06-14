@@ -1,28 +1,14 @@
 'use client'
 
-const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? ''
-const OAUTH_SCOPE = 'email profile https://www.googleapis.com/auth/drive.appdata'
-
-function buildOAuthUrl(): string {
-  const params = new URLSearchParams({
-    client_id: GOOGLE_CLIENT_ID,
-    redirect_uri: window.location.origin,
-    response_type: 'token',
-    scope: OAUTH_SCOPE,
-    include_granted_scopes: 'true',
-    prompt: 'select_account',
-  })
-  return `https://accounts.google.com/o/oauth2/v2/auth?${params}`
-}
+import { signInWithGoogleUnified } from '@/lib/google-auth'
+import { isSupabaseConfigured } from '@/lib/supabase'
 
 export function GoogleSignInButton() {
-  if (!GOOGLE_CLIENT_ID) {
+  if (!isSupabaseConfigured()) {
     return (
       <div className="rounded-xl bg-muted p-3">
         <p className="text-xs text-muted-foreground">
-          Google Drive 동기화를 사용하려면{' '}
-          <code className="rounded bg-background px-1 py-0.5 text-[10px]">NEXT_PUBLIC_GOOGLE_CLIENT_ID</code>
-          를 환경변수로 설정하세요.
+          Google 로그인을 사용하려면 Supabase 환경변수를 설정하세요.
         </p>
       </div>
     )
@@ -30,7 +16,7 @@ export function GoogleSignInButton() {
 
   return (
     <button
-      onClick={() => { window.location.href = buildOAuthUrl() }}
+      onClick={() => signInWithGoogleUnified()}
       className="flex w-full items-center justify-center gap-3 rounded-2xl border-2 border-border bg-card py-3.5 text-sm font-bold text-foreground shadow-sm transition-transform active:scale-95"
     >
       <svg className="h-5 w-5" viewBox="0 0 24 24">

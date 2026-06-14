@@ -3,7 +3,7 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, generateId, today, type DBStack } from '../db'
 import { getNextReviewDate, mergeEligibleStacks } from '../leitner'
-import { uploadToGDrive } from '../sync'
+import { scheduleDriveSync } from '../sync/sync-engine'
 
 /** Returns undefined while loading */
 export function useStacks(categoryId: string | undefined) {
@@ -23,43 +23,62 @@ export function useStacksByStage(categoryId: string | undefined, stage: number) 
   return useLiveQuery(
     async () => {
       if (!categoryId) return []
-      const list = await db.stacks.where('categoryId').equals(categoryId).toArray()
-      // Normal stages: hide completed (graduated) stacks; they appear only in graduation view
-      const filtered = list.filter(s => s.stage === stage && !s.isCompleted)
-      // 복습일 임박한 순 (가장 빨리 복습해야 할 것이 위에)
+      const list = await db.stacks
+        .where('[categoryId+stage]')
+        .equals([categoryId, stage])
+        .toArray()
+      const filtered = list.filter(s => !s.isCompleted)
       return filtered.sort((a, b) => (a.nextReviewDate || '').localeCompare(b.nextReviewDate || ''))
     },
     [categoryId, stage]
   )
 }
 
-export function useStackCountByStage(categoryId: string | undefined, stage: number) {
+export function useStageStackCounts(categoryId: string | undefined, stages: number[]) {
   return useLiveQuery(
     async () => {
-      if (!categoryId) return 0
-      const list = await db.stacks.where('categoryId').equals(categoryId).toArray()
-      return list.filter(s => s.stage === stage && !s.isCompleted).length
+      if (!categoryId || stages.length === 0) return {} as Record<number, number>
+      const pairs = await Promise.all(
+        stages.map(async (stage) => {
+          const list = await db.stacks
+            .where('[categoryId+stage]')
+            .equals([categoryId, stage])
+            .toArray()
+          return [stage, list.filter((s) => !s.isCompleted).length] as const
+        })
+      )
+      return Object.fromEntries(pairs) as Record<number, number>
     },
-    [categoryId, stage]
+    [categoryId, stages.join(',')]
   )
 }
 
+export function useStackCountByStage(categoryId: string | undefined, stage: number) {
+  const counts = useStageStackCounts(categoryId, categoryId ? [stage] : [])
+  return counts?.[stage] ?? 0
+}
+
 export function useTodayReviewStacks() {
-  const t = today()
   return useLiveQuery(
-    () => db.stacks.filter(s => !s.isCompleted && s.nextReviewDate <= t).toArray()
+    () => {
+      // Compute today() inside the query so it stays correct on re-run
+      // (avoids a date captured at mount going stale after midnight).
+      const t = today()
+      return db.stacks.filter(s => !s.isCompleted && s.stage >= 1 && s.nextReviewDate <= t).toArray()
+    }
   )
 }
 
 export function useTodayReviewStacksForCategory(categoryId: string | undefined) {
-  const t = today()
   return useLiveQuery(
-    () => categoryId
-      ? db.stacks
-          .where('categoryId').equals(categoryId)
-          .filter(s => !s.isCompleted && s.nextReviewDate <= t)
-          .toArray()
-      : Promise.resolve([] as DBStack[]),
+    () => {
+      if (!categoryId) return Promise.resolve([] as DBStack[])
+      const t = today()
+      return db.stacks
+        .where('categoryId').equals(categoryId)
+        .filter(s => !s.isCompleted && s.stage >= 1 && s.nextReviewDate <= t)
+        .toArray()
+    },
     [categoryId]
   )
 }
@@ -92,13 +111,13 @@ export async function createStack(categoryId: string, stage: number = 1): Promis
   }
   await db.stacks.add(stack)
   await mergeEligibleStacks(categoryId)
-  await uploadToGDrive().catch(() => {})
+  scheduleDriveSync()
   return stack
 }
 
 export async function updateStack(id: string, data: Partial<Omit<DBStack, 'id' | 'createdAt'>>): Promise<void> {
   await db.stacks.update(id, { ...data, updatedAt: Date.now() })
-  await uploadToGDrive().catch(() => {})
+  scheduleDriveSync()
 }
 
 export async function deleteStack(id: string): Promise<void> {
@@ -106,14 +125,15 @@ export async function deleteStack(id: string): Promise<void> {
     await db.cards.where('stackId').equals(id).delete()
     await db.stacks.delete(id)
   })
-  await uploadToGDrive().catch(() => {})
+  scheduleDriveSync()
 }
 
 export async function resetStack(id: string): Promise<void> {
   const stack = await db.stacks.get(id)
   if (!stack) return
-  const { today: t } = await import('../db')
-  const date = t()
+  // Stage 1 is always scheduled for its interval (tomorrow), consistent with
+  // new/failed cards — never "today".
+  const date = getNextReviewDate(1)
   await db.stacks.update(id, {
     stage: 1,
     nextReviewDate: date,
@@ -122,16 +142,16 @@ export async function resetStack(id: string): Promise<void> {
     updatedAt: Date.now(),
   })
   await mergeEligibleStacks(stack.categoryId)
-  await uploadToGDrive().catch(() => {})
+  scheduleDriveSync()
 }
 
 export async function moveStackToStage(id: string, newStage: number, maxStages: number): Promise<void> {
   const stack = await db.stacks.get(id)
   if (!stack) return
-  const { today: t } = await import('../db')
   const isCompleted = newStage > maxStages
   const stage = Math.min(newStage, maxStages)
-  const date = stage === 1 ? t() : getNextReviewDate(stage)
+  // Every stage (including stage 1 = tomorrow) follows its interval date.
+  const date = getNextReviewDate(stage)
   await db.stacks.update(id, {
     stage,
     nextReviewDate: date,
@@ -140,7 +160,7 @@ export async function moveStackToStage(id: string, newStage: number, maxStages: 
     updatedAt: Date.now(),
   })
   await mergeEligibleStacks(stack.categoryId)
-  await uploadToGDrive().catch(() => {})
+  scheduleDriveSync()
 }
 
 export async function moveCardToStack(cardId: string, targetStackId: string, targetCategoryId: string): Promise<void> {
@@ -149,5 +169,5 @@ export async function moveCardToStack(cardId: string, targetStackId: string, tar
     categoryId: targetCategoryId,
     updatedAt: Date.now(),
   })
-  await uploadToGDrive().catch(() => {})
+  scheduleDriveSync()
 }

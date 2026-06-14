@@ -2,7 +2,7 @@
 
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, generateId, type DBCategory } from '../db'
-import { uploadToGDrive } from '../sync'
+import { scheduleDriveSync } from '../sync/sync-engine'
 
 /** Returns undefined while loading, DBCategory[] once ready */
 export function useCategories() {
@@ -23,13 +23,13 @@ export async function createCategory(data: Omit<DBCategory, 'id' | 'createdAt' |
     updatedAt: now,
   }
   await db.categories.add(category)
-  await uploadToGDrive().catch(() => {})
+  scheduleDriveSync()
   return category
 }
 
 export async function updateCategory(id: string, data: Partial<Omit<DBCategory, 'id' | 'createdAt'>>): Promise<void> {
   await db.categories.update(id, { ...data, updatedAt: Date.now() })
-  await uploadToGDrive().catch(() => {})
+  scheduleDriveSync()
 }
 
 export async function deleteCategory(id: string): Promise<void> {
@@ -41,5 +41,5 @@ export async function deleteCategory(id: string): Promise<void> {
     await db.stacks.where('categoryId').equals(id).delete()
     await db.categories.delete(id)
   })
-  await uploadToGDrive().catch(() => {})
+  scheduleDriveSync()
 }

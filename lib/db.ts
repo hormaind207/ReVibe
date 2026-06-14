@@ -5,6 +5,7 @@ export interface DBCategory {
   name: string
   icon: string
   color: string
+  backgroundImage?: string // public image URL (from a marketplace template) used instead of color
   maxStages?: number // defaults to 7 if undefined
   stageIntervals?: Record<number, number> // custom interval days per stage
   stageLabels?: Record<number, string>   // custom label names per stage
@@ -43,6 +44,20 @@ export interface DBSyncMeta {
   googleTokenExpiry: number | null
   /** Drive API modifiedTime (RFC 3339) of revibe-data.json for pull detection */
   lastKnownRemoteModifiedTime: string | null
+  /** True after local data/settings change until a successful Drive upload */
+  hasPendingLocalChanges: boolean
+  /** exportedAt from last successfully applied/pushed Drive backup */
+  lastRemoteExportedAt: number | null
+  /** Snooze conflict modal until this timestamp (ms) */
+  conflictSnoozedUntil: number | null
+  /** Remote modifiedTime acknowledged when user taps "later" on conflict */
+  conflictSnoozedRemoteModifiedTime: string | null
+  /** True while an unresolved Drive conflict exists — blocks automatic uploads */
+  syncConflictPending?: boolean | null
+  /** Set after "delete all data" — blocks silent auto-restore from Drive */
+  skipAutoRestore?: boolean | null
+  /** Content hash of last successful Drive upload (skip redundant uploads) */
+  lastUploadedHash?: string | null
 }
 
 export interface DBUserProfile {
@@ -56,6 +71,7 @@ export interface DBStreakMeta {
   id: string // always 'meta'
   currentStreak: number
   lastSuccessDate: string | null // YYYY-MM-DD
+  longestStreak: number // all-time highest streak
 }
 
 class VibeLeitnerDB extends Dexie {
@@ -112,6 +128,54 @@ class VibeLeitnerDB extends Dexie {
       userProfile: 'id',
       streakMeta: 'id',
     })
+
+    // Version 6: DBCategory.backgroundImage (marketplace template image) — field only, no index change
+    this.version(6).stores({
+      categories: 'id, name, createdAt',
+      stacks: 'id, categoryId, stage, nextReviewDate, isCompleted, createdAt, [categoryId+stage]',
+      cards: 'id, stackId, categoryId, createdAt',
+      syncMeta: 'id',
+      userProfile: 'id',
+      streakMeta: 'id',
+    })
+
+    // Version 7: DBStreakMeta.longestStreak — field only, no index change
+    this.version(7).stores({
+      categories: 'id, name, createdAt',
+      stacks: 'id, categoryId, stage, nextReviewDate, isCompleted, createdAt, [categoryId+stage]',
+      cards: 'id, stackId, categoryId, createdAt',
+      syncMeta: 'id',
+      userProfile: 'id',
+      streakMeta: 'id',
+    })
+
+    // Version 8: DBSyncMeta drive sync flags (field only)
+    this.version(8).stores({
+      categories: 'id, name, createdAt',
+      stacks: 'id, categoryId, stage, nextReviewDate, isCompleted, createdAt, [categoryId+stage]',
+      cards: 'id, stackId, categoryId, createdAt',
+      syncMeta: 'id',
+      userProfile: 'id',
+      streakMeta: 'id',
+    }).upgrade(async (tx) => {
+      const meta = await tx.table('syncMeta').get('meta')
+      const [catCount, cardCount] = await Promise.all([
+        tx.table('categories').count(),
+        tx.table('cards').count(),
+      ])
+      const hasLocalData = catCount > 0 || cardCount > 0
+      if (meta) {
+        await tx.table('syncMeta').put({
+          ...meta,
+          hasPendingLocalChanges:
+            meta.hasPendingLocalChanges ??
+            (Boolean(meta.googleEmail) && hasLocalData),
+          lastRemoteExportedAt: meta.lastRemoteExportedAt ?? null,
+          conflictSnoozedUntil: meta.conflictSnoozedUntil ?? null,
+          conflictSnoozedRemoteModifiedTime: meta.conflictSnoozedRemoteModifiedTime ?? null,
+        })
+      }
+    })
   }
 }
 
@@ -121,10 +185,13 @@ export function generateId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
 }
 
-export function today(): string {
-  return new Date().toISOString().slice(0, 10)
+export function toDateString(date: Date): string {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
 }
 
-export function toDateString(date: Date): string {
-  return date.toISOString().slice(0, 10)
+export function today(): string {
+  return toDateString(new Date())
 }

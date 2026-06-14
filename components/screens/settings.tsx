@@ -3,20 +3,20 @@
 import { useState, useEffect, type CSSProperties } from 'react'
 import { useTheme } from 'next-themes'
 import { motion } from 'framer-motion'
-import { Layers, BookOpen, PlayCircle, Palette, Bell, Code2 } from 'lucide-react'
+import { Layers, BookOpen, PlayCircle, Palette, Bell } from 'lucide-react'
 import { ScreenHeader } from '@/components/screen-header'
 import { DEFAULT_MAX_STAGES } from '@/lib/leitner'
-import { uploadToGDrive } from '@/lib/sync'
+import { scheduleDriveSync } from '@/lib/sync/sync-engine'
 import { useNavigation } from '@/lib/store'
 import { Onboarding } from '@/components/onboarding'
+import { markGuideOpened } from '@/lib/app-guide-content'
 import { useColorTheme, COLOR_THEMES } from '@/lib/color-theme'
 import {
-  getNotificationSettings,
-  updateNotificationTime,
-  DEFAULT_NOTIFICATION_HOUR,
-  DEFAULT_NOTIFICATION_MINUTE,
-} from '@/lib/hooks/use-notifications'
-import { playButtonTap, playToggleSwitch } from '@/lib/sounds'
+  getNotificationPreferences,
+  updateNotificationPreferences,
+  DEFAULT_REVIEW_HOUR,
+} from '@/lib/push-notifications'
+import { playButtonTap } from '@/lib/sounds'
 
 export function SettingsScreen() {
   const { navigate } = useNavigation()
@@ -25,24 +25,18 @@ export function SettingsScreen() {
   const [defaultMaxStages, setDefaultMaxStages] = useState(DEFAULT_MAX_STAGES)
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [notifEnabled, setNotifEnabled] = useState(false)
-  const [notifHour, setNotifHour] = useState(DEFAULT_NOTIFICATION_HOUR)
-  const [devMode, setDevMode] = useState(false)
+  const [notifHour, setNotifHour] = useState(DEFAULT_REVIEW_HOUR)
 
   useEffect(() => {
     const saved = localStorage.getItem('defaultMaxStages')
     if (saved) setDefaultMaxStages(parseInt(saved, 10))
 
-    const { enabled, hour } = getNotificationSettings()
-    setNotifEnabled(enabled)
-    setNotifHour(hour)
-
-    const storedDevMode = localStorage.getItem('dev_mode')
-    if (storedDevMode === null) {
-      localStorage.setItem('dev_mode', 'false')
-      setDevMode(false)
-    } else {
-      setDevMode(storedDevMode === 'true')
-    }
+    getNotificationPreferences()
+      .then((prefs) => {
+        setNotifEnabled(prefs.masterEnabled)
+        setNotifHour(prefs.reviewHour)
+      })
+      .catch(() => {})
   }, [])
 
   const handleDefaultMaxStagesChange = (val: number) => {
@@ -52,14 +46,7 @@ export function SettingsScreen() {
 
   const handleNotifHourChange = (h: number) => {
     setNotifHour(h)
-    updateNotificationTime(h, DEFAULT_NOTIFICATION_MINUTE)
-  }
-
-  const handleDevModeToggle = () => {
-    playToggleSwitch()
-    const next = !devMode
-    setDevMode(next)
-    localStorage.setItem('dev_mode', String(next))
+    updateNotificationPreferences({ reviewHour: h }).catch(() => {})
   }
 
   return (
@@ -86,7 +73,7 @@ export function SettingsScreen() {
             {COLOR_THEMES.map(theme => (
               <button
                 key={theme.id}
-                onClick={() => { playButtonTap(); setColorTheme(theme.id); if (theme.id === 'carat') setTheme('light'); uploadToGDrive().catch(() => {}) }}
+                onClick={() => { playButtonTap(); setColorTheme(theme.id); if (theme.id === 'carat') setTheme('light'); scheduleDriveSync() }}
                 className={`flex flex-col items-center gap-1.5 rounded-xl p-3 transition-all ${
                   colorTheme === theme.id ? 'ring-2 ring-offset-2 bg-primary/10' : 'bg-muted'
                 }`}
@@ -162,13 +149,13 @@ export function SettingsScreen() {
             <div>
               <p className="text-sm font-bold text-foreground">알림 시간</p>
               <p className="text-xs text-muted-foreground">
-                {notifEnabled ? '매일 복습 알림을 받을 시간을 설정합니다' : '알림을 켜야 적용됩니다 (프로필 탭에서 켜주세요)'}
+                {notifEnabled ? '매일 복습 알림을 받을 시간을 설정합니다' : '알림을 켜야 적용됩니다 (프로필 → 앱 기본 설정)'}
               </p>
             </div>
           </div>
           {!notifEnabled && (
             <p className="mb-3 rounded-xl bg-muted px-3 py-2 text-xs text-muted-foreground">
-              프로필 탭 → 복습 알림을 켜면 아래 시간에 알림을 받을 수 있습니다.
+              프로필 → 앱 기본 설정에서 「전체 알림」을 켜면 아래 시간에 알림을 받을 수 있습니다.
             </p>
           )}
           <div className="flex items-center justify-between mb-2">
@@ -209,15 +196,15 @@ export function SettingsScreen() {
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.05 }}
-          onClick={() => { playButtonTap(); navigate({ type: 'help' }) }}
+          onClick={() => { playButtonTap(); markGuideOpened(); navigate({ type: 'help' }) }}
           className="flex items-center gap-4 rounded-2xl bg-card px-5 py-4 text-left shadow-sm transition-transform active:scale-[0.98]"
         >
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/15">
             <BookOpen className="h-5 w-5 text-primary" />
           </div>
           <div className="flex flex-col flex-1">
-            <span className="text-sm font-semibold text-foreground">사용 가이드</span>
-            <span className="text-xs text-muted-foreground">ReVibe 상세 사용법 보기</span>
+            <span className="text-sm font-semibold text-foreground">완전 가이드</span>
+            <span className="text-xs text-muted-foreground">모든 기능 설명</span>
           </div>
         </motion.button>
 
@@ -234,32 +221,9 @@ export function SettingsScreen() {
           </div>
           <div className="flex flex-col flex-1">
             <span className="text-sm font-semibold text-foreground">앱 소개 다시 보기</span>
-            <span className="text-xs text-muted-foreground">처음 실행 시 나타나는 가이드</span>
+            <span className="text-xs text-muted-foreground">앱이 무엇인지 소개 (짧은 버전)</span>
           </div>
         </motion.button>
-
-        {/* Developer mode */}
-        <div className="rounded-2xl bg-card p-5 shadow-sm">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
-              <Code2 className="h-5 w-5 text-muted-foreground" />
-            </div>
-            <div className="flex-1">
-              <p className="text-sm font-bold text-foreground">개발자 모드</p>
-              <p className="text-xs text-muted-foreground">
-                {devMode ? '스택 추가 버튼이 표시됩니다' : '테스트용 기능을 활성화합니다'}
-              </p>
-            </div>
-            <button
-              onClick={handleDevModeToggle}
-              className={`relative h-7 w-12 rounded-full transition-colors duration-200 ${devMode ? 'bg-primary' : 'bg-muted'}`}
-            >
-              <span
-                className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow-sm transition-transform duration-200 ${devMode ? 'translate-x-5' : 'translate-x-0.5'}`}
-              />
-            </button>
-          </div>
-        </div>
       </motion.div>
 
       {showOnboarding && (

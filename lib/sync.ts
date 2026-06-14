@@ -1,18 +1,20 @@
 /**
  * Google Drive Sync Module
  *
- * - Real-time sync: revibe-data.json — upload on data change; poll and pull when modified by another device (no reload).
+ * - Real-time sync: revibe-data.json — upload on local data change (debounced).
+ * - Open sync: pull or conflict when app opens (see lib/sync/sync-on-open.ts).
  * - Manual backups: revibe-backup-YYYY-MM-DD-HHmmss.json — create/list/restore/delete separately.
  */
 
 import { db } from './db'
-import { updateSyncMeta, getSyncMeta } from './hooks/use-sync-meta'
+import { getSyncMeta, markLocalChangesSynced, markSyncConflictPending } from './hooks/use-sync-meta'
 import { updateUserProfile } from './hooks/use-user-profile'
+import { syncLocalProfileFromGoogleUser } from './google-auth'
 import {
   DEFAULT_NOTIFICATION_HOUR,
   DEFAULT_NOTIFICATION_MINUTE,
 } from './hooks/use-notifications'
-import { enableNotifications, disableNotifications } from './hooks/use-notifications'
+import { updateNotificationPreferences } from './push-notifications'
 
 const DRIVE_SYNC_FILE_NAME = 'revibe-data.json'
 const DRIVE_BACKUP_PREFIX = 'revibe-backup-'
@@ -21,7 +23,6 @@ const DRIVE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3'
 
 const STORAGE_KEYS = {
   defaultMaxStages: 'defaultMaxStages',
-  devMode: 'dev_mode',
   theme: 'theme',
   colorTheme: 'color-theme',
   notifEnabled: 'notifications',
@@ -31,7 +32,6 @@ const STORAGE_KEYS = {
 
 export interface DriveBackupSettings {
   defaultMaxStages: number
-  devMode: boolean
   theme: string
   colorTheme: string
   notifications: { enabled: boolean; hour: number; minute: number }
@@ -45,7 +45,7 @@ export interface DriveBackup {
   stacks: object[]
   cards: object[]
   settings?: DriveBackupSettings
-  streak?: { currentStreak: number; lastSuccessDate: string | null }
+  streak?: { currentStreak: number; lastSuccessDate: string | null; longestStreak?: number }
 }
 
 async function getAccessToken(): Promise<string | null> {
@@ -84,8 +84,7 @@ function readSettingsFromDevice(): DriveBackupSettings | null {
     localStorage.getItem(STORAGE_KEYS.defaultMaxStages) ?? '7',
     10
   )
-  const devMode = localStorage.getItem(STORAGE_KEYS.devMode) === 'true'
-  const theme = localStorage.getItem(STORAGE_KEYS.theme) ?? 'system'
+  const theme = localStorage.getItem(STORAGE_KEYS.theme) ?? 'light'
   const colorTheme =
     localStorage.getItem(STORAGE_KEYS.colorTheme) ?? 'purple'
   const notifEnabled =
@@ -99,7 +98,6 @@ function readSettingsFromDevice(): DriveBackupSettings | null {
   )
   return {
     defaultMaxStages,
-    devMode,
     theme,
     colorTheme,
     notifications: {
@@ -128,6 +126,20 @@ async function readUserProfileFromDevice(): Promise<{
   }
 }
 
+async function hashBackupContent(content: string): Promise<string> {
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content))
+    return Array.from(new Uint8Array(buf))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('')
+  }
+  let h = 0
+  for (let i = 0; i < content.length; i++) {
+    h = (Math.imul(31, h) + content.charCodeAt(i)) | 0
+  }
+  return String(h >>> 0)
+}
+
 /** Push local data and settings to Google Drive (one-way). */
 export async function uploadToGDrive(): Promise<void> {
   const token = await getAccessToken()
@@ -152,8 +164,7 @@ export async function uploadToGDrive(): Promise<void> {
       ? { ...settings, userProfile }
       : {
           defaultMaxStages: 7,
-          devMode: false,
-          theme: 'system',
+          theme: 'light',
           colorTheme: 'purple',
           notifications: {
             enabled: false,
@@ -164,16 +175,33 @@ export async function uploadToGDrive(): Promise<void> {
         },
     streak:
       streakRow != null
-        ? { currentStreak: streakRow.currentStreak, lastSuccessDate: streakRow.lastSuccessDate }
+        ? { currentStreak: streakRow.currentStreak, lastSuccessDate: streakRow.lastSuccessDate, longestStreak: streakRow.longestStreak ?? streakRow.currentStreak }
         : undefined,
   }
 
   const content = JSON.stringify(backup)
+  const contentHash = await hashBackupContent(content)
+  const metaBefore = await getSyncMeta()
+  if (metaBefore?.lastUploadedHash === contentHash && metaBefore?.lastSyncedAt) {
+    await markLocalChangesSynced({
+      exportedAt: backup.exportedAt,
+      lastUploadedHash: contentHash,
+    })
+    return
+  }
+
   const existing = await findSyncFile(token)
+  let remoteModifiedTime: string | null = null
 
   if (existing) {
-    await driveRequest(
-      `${DRIVE_UPLOAD_API}/files/${existing.id}?uploadType=media`,
+    const lastKnown = metaBefore?.lastKnownRemoteModifiedTime
+    if (lastKnown && existing.modifiedTime !== lastKnown) {
+      await markSyncConflictPending()
+      throw new Error('Google Drive의 데이터가 다른 기기에서 변경되었습니다.')
+    }
+
+    const res = await driveRequest(
+      `${DRIVE_UPLOAD_API}/files/${existing.id}?uploadType=media&fields=modifiedTime`,
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -181,6 +209,8 @@ export async function uploadToGDrive(): Promise<void> {
       },
       token
     )
+    const patchData = (await res.json()) as { modifiedTime?: string }
+    remoteModifiedTime = patchData.modifiedTime ?? existing.modifiedTime
   } else {
     const metadata = { name: DRIVE_SYNC_FILE_NAME, parents: ['appDataFolder'] }
     const form = new FormData()
@@ -189,17 +219,19 @@ export async function uploadToGDrive(): Promise<void> {
       new Blob([JSON.stringify(metadata)], { type: 'application/json' })
     )
     form.append('file', new Blob([content], { type: 'application/json' }))
-    await driveRequest(
-      `${DRIVE_UPLOAD_API}/files?uploadType=multipart`,
+    const res = await driveRequest(
+      `${DRIVE_UPLOAD_API}/files?uploadType=multipart&fields=modifiedTime`,
       { method: 'POST', body: form },
       token
     )
+    const postData = (await res.json()) as { modifiedTime?: string }
+    remoteModifiedTime = postData.modifiedTime ?? null
   }
 
-  const after = await findSyncFile(token)
-  await updateSyncMeta({
-    lastSyncedAt: Date.now(),
-    lastKnownRemoteModifiedTime: after?.modifiedTime ?? null,
+  await markLocalChangesSynced({
+    remoteModifiedTime,
+    exportedAt: backup.exportedAt,
+    lastUploadedHash: contentHash,
   })
 }
 
@@ -211,57 +243,96 @@ export async function getSyncFileModifiedTime(): Promise<string | null> {
   return file?.modifiedTime ?? null
 }
 
+export interface DriveDownloadResult {
+  backup: DriveBackup
+  modifiedTime: string
+}
+
 /** Download real-time sync file and parse as DriveBackup. */
 export async function downloadSyncFileFromGDrive(): Promise<DriveBackup | null> {
+  const result = await downloadSyncFileFromGDriveWithMeta()
+  return result?.backup ?? null
+}
+
+/** Download sync file with Drive modifiedTime (avoids extra HEAD on pull). */
+export async function downloadSyncFileFromGDriveWithMeta(): Promise<DriveDownloadResult | null> {
   const token = await getAccessToken()
   if (!token) throw new Error('Google 계정이 연결되지 않았습니다.')
   const file = await findSyncFile(token)
-  if (!file) return null
+  if (!file) {
+    return null
+  }
   const res = await driveRequest(
     `${DRIVE_API}/files/${file.id}?alt=media`,
     {},
     token
   )
-  return parseDriveBackupResponse(await res.json())
+  const backup = parseDriveBackupResponse(await res.json())
+  return { backup, modifiedTime: file.modifiedTime }
 }
 
 /** Apply remote backup data to local DB and settings (no reload). */
 export async function applyRemoteDataToLocal(remote: DriveBackup): Promise<void> {
+  const remoteEmpty = remote.categories.length === 0 && remote.cards.length === 0
+  if (remoteEmpty) {
+    const [catCount, cardCount] = await Promise.all([
+      db.categories.count(),
+      db.cards.count(),
+    ])
+    if (catCount > 0 || cardCount > 0) {
+      throw new Error('원격 백업이 비어 있어 로컬 데이터를 덮어쓸 수 없습니다.')
+    }
+  }
+
+  // Drop orphan records (cards/stacks pointing to missing parents) so a partially
+  // corrupt backup can't leave the UI with dangling references after apply.
+  const categories = remote.categories as Parameters<typeof db.categories.bulkPut>[0]
+  const allStacks = remote.stacks as Parameters<typeof db.stacks.bulkPut>[0]
+  const allCards = remote.cards as Parameters<typeof db.cards.bulkPut>[0]
+  const categoryIds = new Set(categories.map((c) => c.id))
+  const stacks = allStacks.filter((s) => categoryIds.has(s.categoryId))
+  const stackIds = new Set(stacks.map((s) => s.id))
+  const cards = allCards.filter((c) => stackIds.has(c.stackId))
+
   await db.transaction('rw', [db.categories, db.stacks, db.cards], async () => {
     await db.cards.clear()
     await db.stacks.clear()
     await db.categories.clear()
-    await db.categories.bulkPut(
-      remote.categories as Parameters<typeof db.categories.bulkPut>[0]
-    )
-    await db.stacks.bulkPut(
-      remote.stacks as Parameters<typeof db.stacks.bulkPut>[0]
-    )
-    await db.cards.bulkPut(
-      remote.cards as Parameters<typeof db.cards.bulkPut>[0]
-    )
+    await db.categories.bulkPut(categories)
+    await db.stacks.bulkPut(stacks)
+    await db.cards.bulkPut(cards)
   })
 
   if (remote.settings && typeof window !== 'undefined') {
-    const s = remote.settings
-    localStorage.setItem(STORAGE_KEYS.defaultMaxStages, String(s.defaultMaxStages))
-    localStorage.setItem(STORAGE_KEYS.devMode, String(s.devMode))
-    localStorage.setItem(STORAGE_KEYS.theme, s.theme)
-    localStorage.setItem(STORAGE_KEYS.colorTheme, s.colorTheme)
-    localStorage.setItem(STORAGE_KEYS.notifEnabled, String(s.notifications.enabled))
-    localStorage.setItem(STORAGE_KEYS.notifHour, String(s.notifications.hour))
-    localStorage.setItem(STORAGE_KEYS.notifMinute, String(s.notifications.minute))
+    // Settings/profile are best-effort: a failure here must not prevent the
+    // sync-meta bookkeeping below from running (DB data is already applied).
+    try {
+      const s = remote.settings
+      localStorage.setItem(STORAGE_KEYS.defaultMaxStages, String(s.defaultMaxStages))
+      localStorage.setItem(STORAGE_KEYS.theme, s.theme)
+      localStorage.setItem(STORAGE_KEYS.colorTheme, s.colorTheme)
+      localStorage.setItem(STORAGE_KEYS.notifEnabled, String(s.notifications.enabled))
+      localStorage.setItem(STORAGE_KEYS.notifHour, String(s.notifications.hour))
+      localStorage.setItem(STORAGE_KEYS.notifMinute, String(s.notifications.minute))
 
-    await updateUserProfile({
-      nickname: s.userProfile.nickname,
-      avatarEmoji: s.userProfile.avatarEmoji,
-      avatarImage: s.userProfile.avatarImage,
-    })
+      await updateUserProfile({
+        nickname: s.userProfile.nickname,
+        avatarEmoji: s.userProfile.avatarEmoji,
+        avatarImage: s.userProfile.avatarImage,
+      })
 
-    if (s.notifications.enabled) {
-      await enableNotifications(s.notifications.hour, s.notifications.minute)
-    } else {
-      await disableNotifications()
+      const { getSupabase } = await import('./supabase')
+      const sb = getSupabase()
+      if (sb) {
+        const { data } = await sb.auth.getSession()
+        if (data.session?.user && !data.session.user.is_anonymous) {
+          await syncLocalProfileFromGoogleUser(data.session.user, data.session)
+        }
+      }
+
+      await updateNotificationPreferences({ reviewHour: s.notifications.hour }).catch(() => {})
+    } catch {
+      /* best-effort: keep going so sync meta/streak are still updated */
     }
   }
 
@@ -270,10 +341,31 @@ export async function applyRemoteDataToLocal(remote: DriveBackup): Promise<void>
       id: 'meta',
       currentStreak: remote.streak.currentStreak,
       lastSuccessDate: remote.streak.lastSuccessDate,
+      longestStreak: remote.streak.longestStreak ?? remote.streak.currentStreak ?? 0,
     })
   }
+}
 
-  await updateSyncMeta({ lastSyncedAt: Date.now() })
+/**
+ * Apply a remote backup and align sync meta in one step.
+ * If apply succeeds but acknowledge fails, marks conflict pending so uploads
+ * stay blocked until the user resolves (avoids silent meta/DB mismatch).
+ */
+export async function applyRemoteBackupAndAcknowledge(
+  remote: DriveBackup,
+  remoteModifiedTime?: string | null
+): Promise<void> {
+  await applyRemoteDataToLocal(remote)
+  const { acknowledgeRemoteAfterPull } = await import('./sync/sync-engine')
+  try {
+    await acknowledgeRemoteAfterPull(remote.exportedAt, remoteModifiedTime)
+  } catch (ackErr) {
+    await markSyncConflictPending()
+    console.error(ackErr)
+    throw new Error(
+      '데이터는 불러왔지만 동기화 상태 갱신에 실패했습니다. 앱을 다시 열거나 충돌 안내에 따라 선택해 주세요.'
+    )
+  }
 }
 
 function parseDriveBackupResponse(raw: unknown): DriveBackup {
@@ -281,9 +373,15 @@ function parseDriveBackupResponse(raw: unknown): DriveBackup {
     throw new Error('백업 파일 형식이 올바르지 않습니다.')
   }
   const backup = raw as DriveBackup
-  if (!Array.isArray(backup.categories)) backup.categories = []
-  if (!Array.isArray(backup.stacks)) backup.stacks = []
-  if (!Array.isArray(backup.cards)) backup.cards = []
+  // A corrupt file (keys present but not arrays) must NOT be coerced to empty
+  // arrays — that would silently wipe local data on apply.
+  if (
+    !Array.isArray(backup.categories) ||
+    !Array.isArray(backup.stacks) ||
+    !Array.isArray(backup.cards)
+  ) {
+    throw new Error('백업 파일이 손상되었습니다.')
+  }
   return backup
 }
 
@@ -303,10 +401,10 @@ export async function downloadFromGDrive(): Promise<DriveBackup | null> {
 
 /** Restore device from real-time sync file (apply only; no reload). */
 export async function restoreFromGDrive(): Promise<DriveBackup> {
-  const remote = await downloadSyncFileFromGDrive()
-  if (!remote) throw new Error('Google Drive에 백업 파일이 없습니다.')
-  await applyRemoteDataToLocal(remote)
-  return remote
+  const download = await downloadSyncFileFromGDriveWithMeta()
+  if (!download) throw new Error('Google Drive에 백업 파일이 없습니다.')
+  await applyRemoteBackupAndAcknowledge(download.backup, download.modifiedTime)
+  return download.backup
 }
 
 // --- Manual backups (revibe-backup-YYYY-MM-DD-HHmmss.json) ---
@@ -352,8 +450,7 @@ export async function createManualBackup(): Promise<{ label: string }> {
       ? { ...settings, userProfile }
       : {
           defaultMaxStages: 7,
-          devMode: false,
-          theme: 'system',
+          theme: 'light',
           colorTheme: 'purple',
           notifications: {
             enabled: false,
@@ -364,7 +461,7 @@ export async function createManualBackup(): Promise<{ label: string }> {
         },
     streak:
       streakRow != null
-        ? { currentStreak: streakRow.currentStreak, lastSuccessDate: streakRow.lastSuccessDate }
+        ? { currentStreak: streakRow.currentStreak, lastSuccessDate: streakRow.lastSuccessDate, longestStreak: streakRow.longestStreak ?? streakRow.currentStreak }
         : undefined,
   }
 

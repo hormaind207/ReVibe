@@ -2,14 +2,16 @@
 
 import { useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Download } from 'lucide-react'
+import { Download, X } from 'lucide-react'
+import { pwaRecommendContent, pwaInstallCta, pwaInstallingLabel } from '@/lib/app-guide-content'
+import { PwaManualInstallHint } from '@/components/pwa-manual-install-hint'
+import { playButtonTap } from '@/lib/sounds'
 
 const STORAGE_KEY = 'install_pwa_banner_dismissed'
 
 interface InstallPwaBannerProps {
   open: boolean
   onClose: () => void
-  /** Called when user taps install; parent triggers deferred prompt. */
   onInstall?: () => Promise<void>
   canInstallPrompt: boolean
 }
@@ -24,7 +26,8 @@ export function InstallPwaBanner({
   const [installing, setInstalling] = useState(false)
 
   const handleInstall = useCallback(async () => {
-    if (onInstall && canInstallPrompt) {
+    playButtonTap()
+    if (canInstallPrompt && onInstall) {
       setInstalling(true)
       try {
         await onInstall()
@@ -34,10 +37,13 @@ export function InstallPwaBanner({
       } finally {
         setInstalling(false)
       }
-    } else {
-      onClose()
+      return
     }
-  }, [onInstall, canInstallPrompt, onClose])
+    if (dontShowAgain && typeof window !== 'undefined') {
+      localStorage.setItem(STORAGE_KEY, 'true')
+    }
+    onClose()
+  }, [canInstallPrompt, onInstall, onClose, dontShowAgain])
 
   const handleClose = useCallback(() => {
     if (dontShowAgain && typeof window !== 'undefined') {
@@ -49,72 +55,65 @@ export function InstallPwaBanner({
   return (
     <AnimatePresence>
       {open && (
-        <>
-          <motion.div
-            key="backdrop"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[90] bg-black/40 backdrop-blur-sm"
-            onClick={handleClose}
-          />
-          <motion.div
-            key="banner"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 20 }}
-            transition={{ type: 'spring', stiffness: 300, damping: 28 }}
-            className="fixed left-4 right-4 top-[50%] z-[91] mx-auto max-w-md -translate-y-1/2 rounded-2xl border border-border bg-card p-5 shadow-xl"
-            onClick={e => e.stopPropagation()}
-          >
+        <motion.div
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -8 }}
+          className="w-full"
+        >
+          <div className="rounded-2xl border border-primary/25 bg-card px-4 py-3 shadow-lg">
             <div className="flex items-start gap-3">
-              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-primary/15 text-primary">
-                <Download className="h-5 w-5" />
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/15 text-primary">
+                <Download className="h-4 w-4" />
               </div>
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-semibold text-foreground">
-                  앱으로 설치해야 정상 작동합니다.
+                  {pwaRecommendContent.headline}
                 </p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  앱을 설치하면 홈 화면에서 바로 사용할 수 있습니다.
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {pwaRecommendContent.subline}
                 </p>
+                {!canInstallPrompt && (
+                  <PwaManualInstallHint className="mt-1.5 text-[11px] text-muted-foreground" />
+                )}
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleInstall}
+                    disabled={canInstallPrompt && (!onInstall || installing)}
+                    className="rounded-lg bg-primary px-3 py-1.5 text-xs font-bold text-primary-foreground disabled:opacity-50"
+                  >
+                    {installing ? pwaInstallingLabel : pwaInstallCta}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleClose}
+                    className="rounded-lg bg-muted px-3 py-1.5 text-xs font-medium text-muted-foreground"
+                  >
+                    나중에
+                  </button>
+                </div>
+                <label className="mt-2 flex cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={dontShowAgain}
+                    onChange={(e) => setDontShowAgain(e.target.checked)}
+                    className="h-3.5 w-3.5 rounded border-border text-primary"
+                  />
+                  <span className="text-[11px] text-muted-foreground">다시 보지 않기</span>
+                </label>
               </div>
-            </div>
-            {canInstallPrompt ? (
               <button
-                onClick={handleInstall}
-                disabled={!onInstall || installing}
-                className="mt-4 w-full rounded-xl bg-primary py-3 text-sm font-bold text-primary-foreground disabled:opacity-50"
+                type="button"
+                onClick={handleClose}
+                className="shrink-0 text-muted-foreground"
+                aria-label="닫기"
               >
-                {installing ? '설치 중...' : '앱 설치'}
+                <X className="h-4 w-4" />
               </button>
-            ) : (
-              <div className="mt-4 space-y-3">
-                <p className="text-xs text-muted-foreground">
-                  Safari 사용 시: <strong>공유</strong> 버튼 →{' '}
-                  <strong>홈 화면에 추가</strong>를 눌러 설치해 주세요.
-                </p>
-                <button
-                  onClick={handleClose}
-                  className="w-full rounded-xl bg-primary py-3 text-sm font-bold text-primary-foreground"
-                >
-                  확인
-                </button>
-              </div>
-            )}
-            <label className="mt-4 flex min-h-[44px] cursor-pointer items-center gap-2">
-              <input
-                type="checkbox"
-                checked={dontShowAgain}
-                onChange={e => setDontShowAgain(e.target.checked)}
-                className="h-4 w-4 rounded border-border text-primary focus:ring-primary/40"
-              />
-              <span className="text-xs font-medium text-muted-foreground">
-                다시 보지 않기
-              </span>
-            </label>
-          </motion.div>
-        </>
+            </div>
+          </div>
+        </motion.div>
       )}
     </AnimatePresence>
   )

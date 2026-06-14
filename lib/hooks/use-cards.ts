@@ -1,8 +1,10 @@
 'use client'
 
 import { useLiveQuery } from 'dexie-react-hooks'
+import { parseImportText as parseImportTextFull } from '../import-cards'
 import { db, generateId, type DBCard } from '../db'
-import { uploadToGDrive } from '../sync'
+import { scheduleDriveSync } from '../sync/sync-engine'
+import { WAITING_STAGE, getOrCreateTomorrowStack, mergeEligibleStacks } from '../leitner'
 
 /** Returns undefined while loading */
 export function useCards(stackId: string | undefined) {
@@ -32,6 +34,71 @@ export function useCategoryCardCount(categoryId: string | undefined) {
   )
 }
 
+export function useStackCardCounts(stackIds: string[]) {
+  return useLiveQuery(
+    async () => {
+      if (!stackIds.length) return {} as Record<string, number>
+      const pairs = await Promise.all(
+        stackIds.map((id) =>
+          db.cards.where('stackId').equals(id).count().then((n) => [id, n] as const)
+        )
+      )
+      return Object.fromEntries(pairs) as Record<string, number>
+    },
+    [stackIds.join(',')]
+  )
+}
+
+/** Waiting cards + count in one live query. */
+export function useWaitingStats(categoryId: string | undefined) {
+  return useLiveQuery(
+    async () => {
+      if (!categoryId) return { cards: [] as DBCard[], count: 0 }
+      const waitingStacks = await db.stacks
+        .where('categoryId')
+        .equals(categoryId)
+        .filter((s) => s.stage === WAITING_STAGE)
+        .toArray()
+      if (waitingStacks.length === 0) return { cards: [] as DBCard[], count: 0 }
+      const waitingIds = waitingStacks.map((s) => s.id)
+      const cards =
+        waitingIds.length === 1
+          ? await db.cards.where('stackId').equals(waitingIds[0]).toArray()
+          : await db.cards.where('stackId').anyOf(waitingIds).toArray()
+      cards.sort((a, b) => a.createdAt - b.createdAt)
+      return { cards, count: cards.length }
+    },
+    [categoryId]
+  )
+}
+
+/** Cards that belong to the waiting stack (stage 0) of this category. */
+export function useWaitingCards(categoryId: string | undefined) {
+  const stats = useWaitingStats(categoryId)
+  return stats?.cards
+}
+
+export function useWaitingCardCount(categoryId: string | undefined) {
+  const stats = useWaitingStats(categoryId)
+  return stats?.count ?? 0
+}
+
+/**
+ * Promote selected waiting cards into a tomorrow stage-1 stack (joins the review flow).
+ */
+export async function promoteCardsToStage1(categoryId: string, cardIds: string[]): Promise<void> {
+  if (cardIds.length === 0) return
+  const targetStackId = await getOrCreateTomorrowStack(categoryId)
+  const now = Date.now()
+  await db.transaction('rw', [db.cards], async () => {
+    for (const id of cardIds) {
+      await db.cards.update(id, { stackId: targetStackId, categoryId, updatedAt: now })
+    }
+  })
+  await mergeEligibleStacks(categoryId)
+  scheduleDriveSync()
+}
+
 /** Cards that belong to graduated (completed) stacks in this category */
 export function useGraduatedCards(categoryId: string | undefined) {
   return useLiveQuery(
@@ -41,10 +108,10 @@ export function useGraduatedCards(categoryId: string | undefined) {
         .where('categoryId').equals(categoryId)
         .filter(s => s.isCompleted)
         .toArray()
-      const stackIds = completedStacks.map(s => s.id)
-      if (stackIds.length === 0) return []
+      const stackIdSet = new Set(completedStacks.map(s => s.id))
+      if (stackIdSet.size === 0) return []
       const allCards = await db.cards.where('categoryId').equals(categoryId).toArray()
-      return allCards.filter(c => stackIds.includes(c.stackId))
+      return allCards.filter(c => stackIdSet.has(c.stackId))
     },
     [categoryId]
   )
@@ -62,13 +129,24 @@ export function useStageCardCount(categoryId: string | undefined, stage: number)
         .where('[categoryId+stage]')
         .equals([categoryId, stage])
         .toArray()
-      let count = 0
-      for (const s of stacks) {
-        count += await db.cards.where('stackId').equals(s.id).count()
-      }
-      return count
+      if (stacks.length === 0) return 0
+      const counts = await Promise.all(stacks.map(s => db.cards.where('stackId').equals(s.id).count()))
+      return counts.reduce((sum, c) => sum + c, 0)
     },
     [categoryId, stage]
+  )
+}
+
+export function useCategoryCardCounts(categoryIds: string[]) {
+  return useLiveQuery(
+    async () => {
+      if (!categoryIds.length) return {} as Record<string, number>
+      const pairs = await Promise.all(
+        categoryIds.map(id => db.cards.where('categoryId').equals(id).count().then(n => [id, n] as const))
+      )
+      return Object.fromEntries(pairs) as Record<string, number>
+    },
+    [categoryIds.join(',')]
   )
 }
 
@@ -82,18 +160,18 @@ export async function createCard(data: Pick<DBCard, 'stackId' | 'categoryId' | '
     updatedAt: now,
   }
   await db.cards.add(card)
-  await uploadToGDrive().catch(() => {})
+  scheduleDriveSync()
   return card
 }
 
 export async function updateCard(id: string, data: Partial<Pick<DBCard, 'front' | 'back'>>): Promise<void> {
   await db.cards.update(id, { ...data, updatedAt: Date.now() })
-  await uploadToGDrive().catch(() => {})
+  scheduleDriveSync()
 }
 
 export async function deleteCard(id: string): Promise<void> {
   await db.cards.delete(id)
-  await uploadToGDrive().catch(() => {})
+  scheduleDriveSync()
 }
 
 /**
@@ -118,36 +196,14 @@ export async function bulkImportCards(
       updatedAt: now,
     }))
   await db.cards.bulkAdd(cards)
-  await uploadToGDrive().catch(() => {})
+  scheduleDriveSync()
   return cards
 }
 
 /**
- * Parse text into front/back pairs. One line per card.
- * Separator: tab, or first period (.) — e.g. "앞면. 뒷면"
+ * @deprecated Use parseImportText from '@/lib/import-cards' for full result with errors.
+ * Returns only successfully parsed cards.
  */
 export function parseImportText(text: string): Array<{ front: string; back: string }> {
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
-  const results: Array<{ front: string; back: string }> = []
-
-  for (const line of lines) {
-    let front: string
-    let back: string
-    if (line.includes('\t')) {
-      const parts = line.split('\t')
-      if (parts.length >= 2) {
-        front = parts[0].trim()
-        back = parts.slice(1).join('\t').trim()
-        results.push({ front, back })
-      }
-    } else {
-      const dotIdx = line.indexOf('.')
-      if (dotIdx >= 0) {
-        front = line.slice(0, dotIdx).trim()
-        back = line.slice(dotIdx + 1).trim()
-        results.push({ front, back })
-      }
-    }
-  }
-  return results
+  return parseImportTextFull(text).cards
 }

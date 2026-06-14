@@ -9,6 +9,8 @@ import { useCards } from '@/lib/hooks/use-cards'
 import { useCategory } from '@/lib/hooks/use-categories'
 import { processReviewResult, applyPartialReviewResult, getTodayReviewStacks, DEFAULT_MAX_STAGES } from '@/lib/leitner'
 import { updateStreakOnDaySuccess } from '@/lib/streak'
+import { flushNotificationSnapshots, markNotificationSnapshotsDirty } from '@/lib/push-notifications'
+import { addLeagueScore } from '@/lib/ranking'
 import { ScreenHeader } from '@/components/screen-header'
 import { Progress } from '@/components/ui/progress'
 import { ConfettiExplosion } from '@/components/confetti'
@@ -25,7 +27,14 @@ type ReviewResult = { promoted: boolean; demotedCount: number; completedStack: b
 export function ReviewSession({ categoryId, stackId }: ReviewSessionProps) {
   const { goBack, navigateToStageReplacingStackFlow } = useNavigation()
   const stack = useStack(stackId)
-  const cards = useCards(stackId) ?? []
+  const liveCards = useCards(stackId) ?? []
+  // Freeze the card set for the session so live DB updates (e.g. a background
+  // Drive pull) can't desync currentIndex / results during review.
+  const snapshotRef = useRef<DBCard[] | null>(null)
+  if (snapshotRef.current === null && liveCards.length > 0) {
+    snapshotRef.current = liveCards
+  }
+  const cards = snapshotRef.current ?? liveCards
   const category = useCategory(categoryId)
 
   const [currentIndex, setCurrentIndex] = useState(0)
@@ -36,6 +45,7 @@ export function ReviewSession({ categoryId, stackId }: ReviewSessionProps) {
   const [processing, setProcessing] = useState(false)
   const [showEmptyStackConfirm, setShowEmptyStackConfirm] = useState(false)
   const [showSaveProgressConfirm, setShowSaveProgressConfirm] = useState(false)
+  const [toast, setToast] = useState<string | null>(null)
 
   const resultsList = Array.from(results.values())
   const passCount = resultsList.filter(r => r === 'pass').length
@@ -49,6 +59,20 @@ export function ReviewSession({ categoryId, stackId }: ReviewSessionProps) {
 
   const hasPlayedStartRef = useRef(false)
   const hasPlayedFanfareRef = useRef(false)
+  const finishingRef = useRef(false)
+  const advanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const showToast = useCallback((msg: string) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+    setToast(msg)
+    toastTimerRef.current = setTimeout(() => setToast(null), 2500)
+  }, [])
+
+  useEffect(() => () => {
+    if (advanceTimerRef.current) clearTimeout(advanceTimerRef.current)
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+  }, [])
 
   useEffect(() => {
     if (cards.length > 0 && currentCard && !showComplete && !hasPlayedStartRef.current) {
@@ -82,18 +106,21 @@ export function ReviewSession({ categoryId, stackId }: ReviewSessionProps) {
     if (!currentCard) return
     if (result === 'pass') playSuccessPing()
     else playFail()
-    const newResults = new Map(results)
-    newResults.set(currentCard.id, result)
-    setResults(newResults)
+    setResults(prev => {
+      const next = new Map(prev)
+      next.set(currentCard.id, result)
+      return next
+    })
     setIsFlipped(false)
     if (currentIndex + 1 >= cards.length) {
       setShowComplete(true)
     } else {
-      setTimeout(() => {
+      if (advanceTimerRef.current) clearTimeout(advanceTimerRef.current)
+      advanceTimerRef.current = setTimeout(() => {
         setCurrentIndex(prev => prev + 1)
       }, 200)
     }
-  }, [currentCard, results, currentIndex, cards.length])
+  }, [currentCard, currentIndex, cards.length])
 
   const goPrev = useCallback(() => {
     if (currentIndex <= 0) return
@@ -103,6 +130,8 @@ export function ReviewSession({ categoryId, stackId }: ReviewSessionProps) {
   }, [currentIndex, cards, results])
 
   const handleFinish = useCallback(async () => {
+    if (finishingRef.current) return
+    finishingRef.current = true
     setProcessing(true)
     try {
       const outcome = await processReviewResult(stackId, results)
@@ -110,6 +139,21 @@ export function ReviewSession({ categoryId, stackId }: ReviewSessionProps) {
       getTodayReviewStacks().then((dueStacks) => {
         if (dueStacks.length === 0) updateStreakOnDaySuccess().catch(() => {})
       })
+      markNotificationSnapshotsDirty()
+      flushNotificationSnapshots().catch(() => {})
+      // League score is best-effort: review is already committed — failure must
+      // not unlock the guard or processReviewResult would run again on re-tap.
+      try {
+        const reviewedCount = results.size
+        if (reviewedCount > 0) {
+          await addLeagueScore(reviewedCount, 'card_review')
+        }
+        if (outcome.completedStack && passCount > 0) {
+          await addLeagueScore(passCount * 2, 'graduation')
+        }
+      } catch (scoreErr) {
+        console.error(scoreErr)
+      }
       if (outcome.autoDeleted) {
         navigateToStageReplacingStackFlow(categoryId, stack!.stage)
         return
@@ -117,16 +161,21 @@ export function ReviewSession({ categoryId, stackId }: ReviewSessionProps) {
       if (outcome.stackEmpty) {
         setShowEmptyStackConfirm(true)
       } else if (outcome.completedStack) {
-        navigateToStageReplacingStackFlow(categoryId, maxStages)
+        // Graduated stacks live in the graduation view (stage 99), not the
+        // last numbered stage (which hides completed stacks).
+        navigateToStageReplacingStackFlow(categoryId, 99)
       } else {
         goBack()
       }
     } catch (e) {
       console.error(e)
-    } finally {
+      showToast(
+        e instanceof Error ? e.message : '복습 결과 저장에 실패했습니다. 다시 시도해 주세요.'
+      )
+      finishingRef.current = false
       setProcessing(false)
     }
-  }, [stackId, results, goBack, navigateToStageReplacingStackFlow, categoryId, stack?.stage, maxStages])
+  }, [stackId, results, goBack, navigateToStageReplacingStackFlow, categoryId, stack?.stage, passCount, showToast])
 
   const handleRemoveEmptyStack = useCallback(() => {
     setShowEmptyStackConfirm(false)
@@ -150,6 +199,8 @@ export function ReviewSession({ categoryId, stackId }: ReviewSessionProps) {
   }, [results.size, goBack])
 
   const handleSaveProgressYes = useCallback(async () => {
+    if (finishingRef.current) return
+    finishingRef.current = true
     setShowSaveProgressConfirm(false)
     setProcessing(true)
     try {
@@ -157,15 +208,24 @@ export function ReviewSession({ categoryId, stackId }: ReviewSessionProps) {
       navigateToStageReplacingStackFlow(cid, stage)
     } catch (e) {
       console.error(e)
-    } finally {
+      showToast(
+        e instanceof Error ? e.message : '진행상황 저장에 실패했습니다. 다시 시도해 주세요.'
+      )
+      finishingRef.current = false
       setProcessing(false)
     }
-  }, [stackId, results, navigateToStageReplacingStackFlow])
+  }, [stackId, results, navigateToStageReplacingStackFlow, showToast])
 
   const handleSaveProgressNo = useCallback(() => {
     setShowSaveProgressConfirm(false)
     goBack()
   }, [goBack])
+
+  const toastBanner = toast ? (
+    <div className="fixed bottom-28 left-1/2 z-[70] max-w-[90vw] -translate-x-1/2 rounded-2xl bg-foreground px-4 py-2.5 text-center text-sm font-semibold text-background shadow-lg">
+      {toast}
+    </div>
+  ) : null
 
   if (!stack || (cards.length === 0 && !processing && !showComplete)) {
     return (
@@ -207,6 +267,7 @@ export function ReviewSession({ categoryId, stackId }: ReviewSessionProps) {
             </button>
           </div>
         </div>
+        {toastBanner}
       </div>
     )
   }
@@ -215,7 +276,7 @@ export function ReviewSession({ categoryId, stackId }: ReviewSessionProps) {
   if (showSaveProgressConfirm) {
     return (
       <div className="flex flex-col min-h-screen">
-        <ScreenHeader title="복습" showBack />
+        <ScreenHeader title="복습" showBack onBack={handleSaveProgressNo} />
         <div className="flex flex-1 flex-col items-center justify-center gap-6 px-4">
           <p className="text-center text-sm text-foreground">진행상황을 저장할까요?</p>
           <div className="flex w-full max-w-xs gap-3">
@@ -234,6 +295,7 @@ export function ReviewSession({ categoryId, stackId }: ReviewSessionProps) {
             </button>
           </div>
         </div>
+        {toastBanner}
       </div>
     )
   }
@@ -246,7 +308,8 @@ export function ReviewSession({ categoryId, stackId }: ReviewSessionProps) {
 
     return (
       <div className="flex flex-col min-h-screen pb-20">
-        <ScreenHeader title="복습 완료" showBack />
+        {/* Back here must still commit results (otherwise the review is lost). */}
+        <ScreenHeader title="복습 완료" showBack onBack={handleFinish} />
         <div className="flex flex-1 flex-col items-center gap-6 px-4 pt-6">
           {allPassed && <ConfettiExplosion />}
           <motion.div
@@ -300,6 +363,7 @@ export function ReviewSession({ categoryId, stackId }: ReviewSessionProps) {
             </button>
           </motion.div>
         </div>
+        {toastBanner}
       </div>
     )
   }
@@ -423,6 +487,7 @@ export function ReviewSession({ categoryId, stackId }: ReviewSessionProps) {
           })}
         </div>
       </div>
+      {toastBanner}
     </div>
   )
 }
