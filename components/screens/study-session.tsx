@@ -11,20 +11,26 @@ import { ScreenHeader } from '@/components/screen-header'
 import { Progress } from '@/components/ui/progress'
 import { playReviewStart, playSuccessPing, playFail, playCardFlip } from '@/lib/sounds'
 import type { DBCard } from '@/lib/db'
+import { shuffleArray } from '@/lib/shuffle'
 
 interface StudySessionProps {
   categoryId: string
   stackId: string
+  random?: boolean
 }
 
-export function StudySession({ categoryId, stackId }: StudySessionProps) {
+export function StudySession({ categoryId, stackId, random = false }: StudySessionProps) {
   const { goBack } = useNavigation()
   const stack = useStack(stackId)
   const liveCards = useCards(stackId) ?? []
   const snapshotRef = useRef<DBCard[] | null>(null)
+  const snapshotKeyRef = useRef('')
   const [sessionKey, setSessionKey] = useState(0)
-  if (snapshotRef.current === null && liveCards.length > 0) {
-    snapshotRef.current = liveCards
+
+  const snapshotKey = `${sessionKey}:${random}`
+  if (snapshotKeyRef.current !== snapshotKey && liveCards.length > 0) {
+    snapshotKeyRef.current = snapshotKey
+    snapshotRef.current = random ? shuffleArray(liveCards) : liveCards
   }
   const cards = snapshotRef.current ?? liveCards
   const category = useCategory(categoryId)
@@ -52,7 +58,6 @@ export function StudySession({ categoryId, stackId }: StudySessionProps) {
 
   useEffect(() => {
     hasPlayedStartRef.current = false
-    snapshotRef.current = null
   }, [sessionKey])
 
   useEffect(() => {
@@ -103,7 +108,6 @@ export function StudySession({ categoryId, stackId }: StudySessionProps) {
   }, [results.size, showComplete, goBack])
 
   const handleRestart = useCallback(() => {
-    snapshotRef.current = null
     setCurrentIndex(0)
     setIsFlipped(false)
     setResults(new Map())

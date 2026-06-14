@@ -205,7 +205,13 @@ function ScreenRouter() {
             {screen.type === 'stage' && screen.stage !== 0 && <StackSelection categoryId={screen.categoryId} stage={screen.stage} />}
             {screen.type === 'stack' && <StackDetails categoryId={screen.categoryId} stackId={screen.stackId} />}
             {screen.type === 'review' && <ReviewSession categoryId={screen.categoryId} stackId={screen.stackId} />}
-            {screen.type === 'study' && <StudySession categoryId={screen.categoryId} stackId={screen.stackId} />}
+            {screen.type === 'study' && (
+              <StudySession
+                categoryId={screen.categoryId}
+                stackId={screen.stackId}
+                random={screen.random}
+              />
+            )}
             {screen.type === 'stats' && <StatsScreen />}
             {screen.type === 'ranking-moderation' && (
               <CloudOfflineGate feature="ranking" title="랭킹 관리" showBack>

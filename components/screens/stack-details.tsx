@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Play, Lock, Check, Trophy, Sparkles, Plus, Trash2, Pencil, MoreVertical, ArrowRight, Calendar, BookOpen } from 'lucide-react'
 import { useNavigation } from '@/lib/store'
@@ -16,6 +16,9 @@ import { AddCardModal } from '@/components/modals/add-card-modal'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, today, toDateString } from '@/lib/db'
 import { scheduleDriveSync } from '@/lib/sync/sync-engine'
+import { Switch } from '@/components/ui/switch'
+import { readStudyRandom, writeStudyRandom } from '@/lib/shuffle'
+import { playToggleSwitch } from '@/lib/sounds'
 import type { DBCard, DBCategory, DBStack } from '@/lib/db'
 
 const STAGE_BG_COLORS = [
@@ -223,6 +226,17 @@ export function StackDetails({ categoryId, stackId }: StackDetailsProps) {
   const [movingCard, setMovingCard] = useState<DBCard | null>(null)
   const [showSetDate, setShowSetDate] = useState(false)
   const [editDate, setEditDate] = useState('')
+  const [studyRandom, setStudyRandom] = useState(false)
+
+  useEffect(() => {
+    setStudyRandom(readStudyRandom(stackId))
+  }, [stackId])
+
+  const handleStudyRandomChange = (checked: boolean) => {
+    playToggleSwitch()
+    setStudyRandom(checked)
+    writeStudyRandom(stackId, checked)
+  }
 
   if (!stack) return (
     <div className="flex min-h-screen items-center justify-center">
@@ -572,15 +586,32 @@ export function StackDetails({ categoryId, stackId }: StackDetailsProps) {
             <Play className="h-5 w-5" />
             복습 시작
           </motion.button>
-          <motion.button
-            whileTap={{ scale: 0.96 }}
-            onClick={() => navigate({ type: 'study', categoryId, stackId })}
-            disabled={cards.length === 0}
-            className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-muted py-4 text-base font-bold text-foreground shadow-sm transition-all active:shadow-sm disabled:opacity-50"
-          >
-            <BookOpen className="h-5 w-5 text-primary" />
-            자유학습
-          </motion.button>
+          <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+            <motion.button
+              whileTap={{ scale: 0.96 }}
+              onClick={() => navigate({ type: 'study', categoryId, stackId, random: studyRandom })}
+              disabled={cards.length === 0}
+              className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-muted py-4 text-base font-bold text-foreground shadow-sm transition-all active:shadow-sm disabled:opacity-50"
+            >
+              <BookOpen className="h-5 w-5 text-primary" />
+              자유학습
+            </motion.button>
+            <div className="flex items-center justify-center gap-2">
+              <Switch
+                id={`study-random-${stackId}`}
+                checked={studyRandom}
+                onCheckedChange={handleStudyRandomChange}
+                disabled={cards.length === 0}
+                className="scale-90"
+              />
+              <label
+                htmlFor={`study-random-${stackId}`}
+                className={`text-xs font-medium ${cards.length === 0 ? 'text-muted-foreground/50' : 'text-muted-foreground'}`}
+              >
+                랜덤
+              </label>
+            </div>
+          </div>
         </motion.div>
 
         {/* Cards Section */}

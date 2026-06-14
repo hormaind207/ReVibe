@@ -8,7 +8,7 @@ export type Screen =
   | { type: 'stage'; categoryId: string; stage: number }
   | { type: 'stack'; categoryId: string; stackId: string }
   | { type: 'review'; categoryId: string; stackId: string }
-  | { type: 'study'; categoryId: string; stackId: string }
+  | { type: 'study'; categoryId: string; stackId: string; random?: boolean }
   | { type: 'stats' }
   | { type: 'ranking' }
   | { type: 'ranking-moderation' }
